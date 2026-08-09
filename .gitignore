@@ -1,0 +1,36 @@
+# Rust build and coverage output
+/target/
+/coverage/
+/lcov.info
+*.profraw
+*.profdata
+*.rs.bk
+
+# Compiled native artifacts
+*.so
+*.dylib
+*.dll
+
+# Local integration and end-to-end state
+/.e2e/
+
+# Local environment and secrets (keep reviewed examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+plans/

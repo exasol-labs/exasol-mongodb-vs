@@ -1,0 +1,84 @@
+use exasol_udf_sdk::connect_back::ConnectionObject;
+use mongodb_vs::discovery::{EvidenceStatus, InferenceConfig, infer};
+
+fn connection(uri: String) -> ConnectionObject {
+    ConnectionObject {
+        kind: String::new(),
+        address: uri,
+        user: String::new(),
+        password: String::new(),
+    }
+}
+
+#[test]
+#[ignore = "started by scripts/run_mongodb_integration.sh"]
+fn discovers_validator_indexes_samples_and_permission_gaps() {
+    let root_uri = std::env::var("MONGODB_INTEGRATION_ROOT_URI").expect("root URI");
+    let limited_uri = std::env::var("MONGODB_INTEGRATION_LIMITED_URI").expect("limited URI");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let config = InferenceConfig::default();
+        let first = infer(
+            &connection(root_uri.clone()),
+            "inference",
+            "people",
+            &config,
+        )
+        .await
+        .unwrap();
+        let second = infer(&connection(root_uri), "inference", "people", &config)
+            .await
+            .unwrap();
+        assert_eq!(first.manifest, second.manifest);
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_eq!(first.report, second.report);
+        assert_eq!(first.report.metadata_status, EvidenceStatus::Available);
+        assert_eq!(first.report.index_status, EvidenceStatus::Available);
+        assert_eq!(first.report.sample_status, EvidenceStatus::Available);
+        assert!(!first.report.complete);
+        assert!(first.report.indexes.iter().any(|index| {
+            index.name == "email_unique" && index.unique && index.keys[0].path == "email"
+        }));
+        assert!(first.report.paths.iter().any(|path| {
+            path.path == ["age"]
+                && path.declared == ["null", "int32", "int64"]
+                && path.observed.contains(&"string".into())
+        }));
+        assert_eq!(
+            first
+                .manifest
+                .tables
+                .iter()
+                .map(|table| table.table_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PEOPLE", "PEOPLE_items_arr", "PEOPLE_profile"]
+        );
+
+        let limited = infer(&connection(limited_uri), "inference", "people", &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            limited.report.metadata_status,
+            EvidenceStatus::NotAuthorized
+        );
+        assert_eq!(limited.report.index_status, EvidenceStatus::NotAuthorized);
+        assert_eq!(limited.report.sample_status, EvidenceStatus::Available);
+        assert!(
+            limited
+                .report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("metadata is not authorized"))
+        );
+        assert!(
+            limited
+                .manifest
+                .tables
+                .iter()
+                .any(|table| table.table_name == "PEOPLE")
+        );
+    });
+}

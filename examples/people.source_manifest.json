@@ -1,0 +1,126 @@
+{
+  "format": "exasol-json-tables-source-manifest",
+  "version": 1,
+  "generator": "exasol-mongodb-vs-example",
+  "stem": "PEOPLE",
+  "roots": [
+    {
+      "tableName": "PEOPLE",
+      "familyTables": [
+        "PEOPLE",
+        "PEOPLE_items_arr",
+        "PEOPLE_items_arr_flags_arr",
+        "PEOPLE_profile",
+        "PEOPLE_tags_arr"
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "parentTable": "PEOPLE",
+      "childTable": "PEOPLE_profile",
+      "segmentName": "profile",
+      "relationKind": "object"
+    },
+    {
+      "parentTable": "PEOPLE",
+      "childTable": "PEOPLE_tags_arr",
+      "segmentName": "tags",
+      "relationKind": "array"
+    },
+    {
+      "parentTable": "PEOPLE",
+      "childTable": "PEOPLE_items_arr",
+      "segmentName": "items",
+      "relationKind": "array"
+    },
+    {
+      "parentTable": "PEOPLE_items_arr",
+      "childTable": "PEOPLE_items_arr_flags_arr",
+      "segmentName": "flags",
+      "relationKind": "array"
+    }
+  ],
+  "tables": [
+    {
+      "tableName": "PEOPLE",
+      "path": "root",
+      "pathSegments": [],
+      "kind": "object",
+      "hasNestedArray": true,
+      "rootTable": "PEOPLE",
+      "columns": [
+        {"name": "_id", "typeName": "VARCHAR(64)", "ordinal": 1, "isRequired": true},
+        {"name": "mongo_id", "sourceName": "_id", "bsonType": "OBJECT_ID", "typeName": "VARCHAR(24)", "ordinal": 2},
+        {"name": "name", "typeName": "VARCHAR(2000000)", "ordinal": 3},
+        {"name": "empty_text", "typeName": "VARCHAR(2000000)", "ordinal": 4},
+        {"name": "empty_text|empty", "typeName": "BOOLEAN", "ordinal": 5},
+        {"name": "note", "typeName": "VARCHAR(2000000)", "ordinal": 6},
+        {"name": "note|n", "typeName": "BOOLEAN", "ordinal": 7, "isNullMask": true},
+        {"name": "value", "bsonType": "INTEGER", "typeName": "DECIMAL(19,0)", "ordinal": 8},
+        {"name": "value|string", "typeName": "VARCHAR(2000000)", "ordinal": 9},
+        {"name": "created_at", "bsonType": "DATE_TIME", "typeName": "TIMESTAMP(3)", "ordinal": 10},
+        {"name": "profile|object", "typeName": "VARCHAR(64)", "ordinal": 11},
+        {"name": "tags|array", "typeName": "DECIMAL(18,0)", "ordinal": 12},
+        {"name": "items|array", "typeName": "DECIMAL(18,0)", "ordinal": 13}
+      ]
+    },
+    {
+      "tableName": "PEOPLE_profile",
+      "path": "profile",
+      "pathSegments": [{"name": "profile", "kind": "object"}],
+      "kind": "object",
+      "hasNestedArray": false,
+      "rootTable": "PEOPLE",
+      "columns": [
+        {"name": "_id", "typeName": "VARCHAR(64)", "ordinal": 1, "isRequired": true},
+        {"name": "city", "typeName": "VARCHAR(2000000)", "ordinal": 2}
+      ]
+    },
+    {
+      "tableName": "PEOPLE_tags_arr",
+      "path": "tags[]",
+      "pathSegments": [{"name": "tags", "kind": "array"}],
+      "kind": "array",
+      "hasNestedArray": false,
+      "rootTable": "PEOPLE",
+      "columns": [
+        {"name": "_parent", "typeName": "VARCHAR(64)", "ordinal": 1, "isRequired": true},
+        {"name": "_pos", "typeName": "DECIMAL(18,0)", "ordinal": 2, "isRequired": true},
+        {"name": "_value", "typeName": "VARCHAR(2000000)", "ordinal": 3},
+        {"name": "_value|n", "typeName": "BOOLEAN", "ordinal": 4, "isNullMask": true}
+      ]
+    },
+    {
+      "tableName": "PEOPLE_items_arr",
+      "path": "items[]",
+      "pathSegments": [{"name": "items", "kind": "array"}],
+      "kind": "array",
+      "hasNestedArray": true,
+      "rootTable": "PEOPLE",
+      "columns": [
+        {"name": "_id", "typeName": "VARCHAR(64)", "ordinal": 1, "isRequired": true},
+        {"name": "_parent", "typeName": "VARCHAR(64)", "ordinal": 2, "isRequired": true},
+        {"name": "_pos", "typeName": "DECIMAL(18,0)", "ordinal": 3, "isRequired": true},
+        {"name": "label", "typeName": "VARCHAR(2000000)", "ordinal": 4},
+        {"name": "flags|array", "typeName": "DECIMAL(18,0)", "ordinal": 5}
+      ]
+    },
+    {
+      "tableName": "PEOPLE_items_arr_flags_arr",
+      "path": "items[].flags[]",
+      "pathSegments": [
+        {"name": "items", "kind": "array"},
+        {"name": "flags", "kind": "array"}
+      ],
+      "kind": "array",
+      "hasNestedArray": false,
+      "rootTable": "PEOPLE",
+      "columns": [
+        {"name": "_parent", "typeName": "VARCHAR(64)", "ordinal": 1, "isRequired": true},
+        {"name": "_pos", "typeName": "DECIMAL(18,0)", "ordinal": 2, "isRequired": true},
+        {"name": "_value", "typeName": "BOOLEAN", "ordinal": 3}
+      ]
+    }
+  ]
+}

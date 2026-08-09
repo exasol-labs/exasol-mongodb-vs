@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, test, and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install pinned quality tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          cargo install cargo-llvm-cov --version 0.8.4 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Run quality gate
+        run: make quality
+      - name: Upload LCOV report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-lcov
+          path: target/coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-artifact:
+    name: Linux UDF artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: make build-so verify-so
+
+  mongodb-integration:
+    name: MongoDB inference integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - run: make test-integration
