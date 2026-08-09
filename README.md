@@ -2,26 +2,27 @@
 
 # Exasol MongoDB Virtual Schema
 
-**Query MongoDB collections from Exasol with ordinary SQL—without copying the collection into relational tables first.**
+**Query MongoDB from Exasol with document-friendly SQL—dot paths, array iteration, and JSON reconstruction—without copying collections first.**
 
 ![Rust 1.94.1](https://img.shields.io/badge/Rust-1.94.1-000000?logo=rust)
 ![MongoDB 8 tested](https://img.shields.io/badge/MongoDB-8%20tested-47A248?logo=mongodb&logoColor=white)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Coverage enforced](https://img.shields.io/badge/coverage-%E2%89%A585%25-brightgreen)
 
-[Quick start](#quick-start) · [Data model](#how-documents-become-tables) · [JSON-style SQL](docs/json-tables-sql.md) · [Documentation](#documentation) · [Development](#development)
+[Quick start](#quick-start) · [JSON-style SQL](docs/json-tables-sql.md) · [Data model](#how-documents-become-tables) · [Documentation](#documentation) · [Development](#development)
 
 </div>
 
 Exasol MongoDB Virtual Schema makes a MongoDB collection available as a set of
-queryable Exasol virtual tables. It discovers document fields, preserves nested
-objects and ordered arrays, maps BSON values to safe SQL types, and streams query
-results directly from MongoDB.
+queryable Exasol virtual tables. Combined with the optional Exasol JSON Tables
+SQL interface, MongoDB users can navigate embedded objects and arrays with
+familiar document paths while retaining the full power of Exasol SQL.
 
 Use it when analysts and applications need to combine MongoDB data with the SQL
 and analytics capabilities of Exasol, while MongoDB remains the system of record.
-No separate JSON-table project is required: this connector defines and exposes its
-own complete relational representation of each collection.
+The connector discovers fields, preserves nested structures, maps BSON values to
+safe SQL types, and streams results directly from MongoDB. It is also fully
+usable on its own through its native relational table-family interface.
 
 > [!IMPORTANT]
 > This project is currently at version 0.1 and is distributed as source. Its
@@ -29,8 +30,62 @@ own complete relational representation of each collection.
 > tests MongoDB 8, builds the Linux Rust UDF artifact, and runs a separate live
 > acceptance suite against Exasol Personal.
 
+## Query MongoDB like a document
+
+Given a collection containing:
+
+```javascript
+{
+  _id: ObjectId("66b60c1f3dce4f58d74f97a1"),
+  name: "Ada",
+  profile: { city: "Copenhagen" },
+  tags: ["rust", "analytics"]
+}
+```
+
+the optional [Exasol JSON Tables SQL interface](docs/json-tables-sql.md) lets
+you use quoted dot paths and array selectors directly:
+
+```sql
+SELECT
+  "name",
+  "profile.city" AS city,
+  "tags[FIRST]" AS first_tag,
+  "tags[LAST]" AS last_tag,
+  "tags[SIZE]" AS tag_count
+FROM MONGO_JSON."PEOPLE";
+```
+
+Expand every scalar array element into an ordered result row:
+
+```sql
+SELECT
+  p."name",
+  tag._index AS tag_index,
+  tag
+FROM MONGO_JSON."PEOPLE" p
+JOIN VALUE tag IN p."tags"
+ORDER BY p."name", tag._index;
+```
+
+Or reconstruct complete JSON documents after filtering them with SQL:
+
+```sql
+SELECT TO_JSON(*) AS document_json
+FROM MONGO_JSON."PEOPLE"
+WHERE "profile.city" = 'Copenhagen';
+```
+
+The JSON Tables wrapper is a companion query layer: it generates views over
+this connector's virtual tables and does not copy the collection. See the
+[setup and query guide](docs/json-tables-sql.md) for object arrays, polymorphic
+values, explicit `null`, and session activation.
+
 ## Why use it?
 
+- **Use familiar document paths.** Query nested fields and arrays with dot
+  paths, bracket selectors, and array iterators through the optional JSON Tables
+  interface.
 - **Start without hand-writing a schema.** Infer tables and columns from MongoDB
   validators, indexes, and a bounded document sample.
 - **Query nested data naturally.** Embedded objects and arrays become related
@@ -46,18 +101,8 @@ own complete relational representation of each collection.
 
 ## How documents become tables
 
-Given a collection containing:
-
-```javascript
-{
-  _id: ObjectId("66b60c1f3dce4f58d74f97a1"),
-  name: "Ada",
-  profile: { city: "Copenhagen" },
-  tags: ["rust", "analytics"]
-}
-```
-
-the connector exposes a root table and child tables similar to:
+Underneath the JSON-style interface, the connector exposes the example
+document as a root table and child tables similar to:
 
 ```text
 PEOPLE
@@ -83,13 +128,6 @@ ORDER BY p."name", t."_pos";
 
 See [Data model and BSON mapping](docs/data-model.md) for nested objects,
 polymorphic values, null masks, empty strings, and the explicit manifest format.
-
-Prefer document-style SQL? The optional `exasol-json-tables` wrapper adds quoted
-dot paths such as `"profile.city"`, bracket expressions such as `"tags[LAST]"`,
-array iterators, JSON type helpers, and recursive `TO_JSON(*)` output over these
-same virtual tables. See [JSON-style SQL with Exasol JSON Tables](docs/json-tables-sql.md)
-for setup and query examples. The native table-family interface remains fully
-supported and does not require that project.
 
 ## Quick start
 
@@ -161,7 +199,23 @@ the collection metadata and a bounded sample. The MongoDB user needs `find`
 permission for sampling and queries; metadata and index permissions improve
 inference but degrade explicitly when unavailable.
 
-### 4. Query the collection
+### 4. Choose your SQL interface
+
+For the MongoDB-friendly interface shown above, follow the short
+[JSON Tables wrapper setup](docs/json-tables-sql.md#install-a-wrapper-over-a-mongodb-virtual-schema),
+activate it in the current session, and query document paths directly:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT =
+  MONGO_JSON_PP.MONGO_JSON_PREPROCESSOR;
+
+SELECT "name", "profile.city", "tags[LAST]"
+FROM MONGO_JSON."PEOPLE"
+ORDER BY "name";
+```
+
+The connector can also be queried immediately without the optional wrapper by
+using its native root and child tables:
 
 ```sql
 SELECT "name"
