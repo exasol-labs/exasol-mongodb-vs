@@ -95,6 +95,52 @@ The examples below assume a `people` collection with fields such as:
 The generated root view keeps the source root-table name. Quote it exactly if
 the installed package reports a lowercase or otherwise case-sensitive name.
 
+## Use several collections in one session
+
+This connector exposes one MongoDB collection per Virtual Schema, and each
+wrapper package still describes exactly one source schema. Generate and install
+one wrapper package per collection; repeating `--source-schema` in one
+`wrap generate` command is rejected rather than silently discarding a value.
+
+Exasol allows only one active SQL preprocessor per session, but that
+preprocessor can cover several installed wrappers. Generate a combined
+preprocessor from their manifests. The `--wrapper-schema`, `--helper-schema`,
+and `--manifest` lists are positional and must use the same order:
+
+```bash
+python3 -m exasol_json_tables.generate_wrapper_preprocessor_sql \
+  --schema MONGO_JSON_PP \
+  --script MONGO_JSON_PREPROCESSOR \
+  --wrapper-schema MONGO_JSON_CUSTOMERS \
+  --wrapper-schema MONGO_JSON_ORDERS \
+  --helper-schema MONGO_JSON_CUSTOMERS_INTERNAL \
+  --helper-schema MONGO_JSON_ORDERS_INTERNAL \
+  --manifest ./dist/customers/customers_manifest.json \
+  --manifest ./dist/orders/orders_manifest.json \
+  --output ./dist/mongo-json-combined-preprocessor.sql
+```
+
+Execute the generated SQL in Exasol, then activate that one script. The chosen
+preprocessor schema must contain the JSON Tables preprocessor library; installing
+either package with the same `--preprocessor-schema MONGO_JSON_PP` creates it.
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT =
+  MONGO_JSON_PP.MONGO_JSON_PREPROCESSOR;
+
+SELECT
+  c."customer_id",
+  c."address.city",
+  o."order_id",
+  o."line_items[SIZE]" AS line_item_count
+FROM MONGO_JSON_CUSTOMERS."CUSTOMERS" c
+JOIN MONGO_JSON_ORDERS."ORDERS" o
+  ON o."customer_id" = c."customer_id";
+```
+
+Applications should activate the combined script when opening or checking out
+a connection. Regenerate it whenever any included wrapper is regenerated.
+
 ## Navigate objects with dot paths
 
 A quoted path traverses embedded objects without exposing the connector's
@@ -279,6 +325,12 @@ JOIN ANALYTICS.PEOPLE_FLAGS f
 - Refresh the MongoDB Virtual Schema after an intentional source-schema change,
   then regenerate and reinstall its JSON Tables wrapper so both contracts stay
   aligned.
+- A MongoDB BSON Date maps directly to Exasol `TIMESTAMP(3)`. An ISO-8601 value
+  imported as a MongoDB string remains a SQL `VARCHAR`; a plain `CAST` then
+  depends on `NLS_TIMESTAMP_FORMAT` and commonly rejects the `T` separator. Use
+  an explicit format for known input, for example
+  `TO_TIMESTAMP("created_at", 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')` for a UTC
+  millisecond string, or normalize the source data to BSON Date.
 
 For portable SQL or precise control of joins and pushdown, query the connector's
 native tables directly. See [Data model and BSON mapping](data-model.md) for the
