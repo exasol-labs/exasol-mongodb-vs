@@ -7,6 +7,8 @@ tables rather than flattening arrays into lossy strings.
 This table-family model is fully implemented by this connector. Its manifest is
 compatible with the source-manifest format associated with `exasol-json-tables`,
 but that project is optional and is not needed to query MongoDB.
+For its document-oriented dot paths, bracket selectors, array iterators, and
+JSON helpers, see [JSON-style SQL with Exasol JSON Tables](json-tables-sql.md).
 
 ## Root and child tables
 

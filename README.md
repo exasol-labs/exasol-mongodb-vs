@@ -9,7 +9,7 @@
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Coverage enforced](https://img.shields.io/badge/coverage-%E2%89%A585%25-brightgreen)
 
-[Quick start](#quick-start) · [Data model](#how-documents-become-tables) · [Documentation](#documentation) · [Development](#development)
+[Quick start](#quick-start) · [Data model](#how-documents-become-tables) · [JSON-style SQL](docs/json-tables-sql.md) · [Documentation](#documentation) · [Development](#development)
 
 </div>
 
@@ -83,6 +83,13 @@ ORDER BY p."name", t."_pos";
 
 See [Data model and BSON mapping](docs/data-model.md) for nested objects,
 polymorphic values, null masks, empty strings, and the explicit manifest format.
+
+Prefer document-style SQL? The optional `exasol-json-tables` wrapper adds quoted
+dot paths such as `"profile.city"`, bracket expressions such as `"tags[LAST]"`,
+array iterators, JSON type helpers, and recursive `TO_JSON(*)` output over these
+same virtual tables. See [JSON-style SQL with Exasol JSON Tables](docs/json-tables-sql.md)
+for setup and query examples. The native table-family interface remains fully
+supported and does not require that project.
 
 ## Quick start
 
@@ -192,14 +199,6 @@ Inference is bounded and never claims that a sample proves complete collection
 coverage. Queries fail on an incompatible BSON branch that is actually read,
 rather than silently coercing or discarding the value.
 
-Learn more:
-
-- [Configuration reference](docs/configuration.md)
-- [Schema inference](docs/schema-inference.md)
-- [Data model and BSON mapping](docs/data-model.md)
-- [Query pushdown](docs/pushdown.md)
-- [Aggregation pushdown](docs/aggregation-pushdown.md)
-
 ## Current scope
 
 Supported today:
@@ -229,6 +228,7 @@ Not yet part of the supported release scope:
 |---|---|
 | [Configuration](docs/configuration.md) | Virtual Schema properties, credentials, inference controls, and refresh behavior |
 | [Data model](docs/data-model.md) | Root/child tables, relationships, variants, nulls, empty strings, and BSON-to-SQL types |
+| [JSON-style SQL](docs/json-tables-sql.md) | Optional dot paths, array access and iteration, JSON helpers, and document reconstruction with Exasol JSON Tables |
 | [Schema inference](docs/schema-inference.md) | Validator, index, and sampling evidence; budgets; determinism; permissions |
 | [Query pushdown](docs/pushdown.md) | Advertised operations, exact MongoDB translations, and conservative fallbacks |
 | [Aggregation pushdown](docs/aggregation-pushdown.md) | Current `COUNT(*)` contract, fallbacks, and roadmap for additional aggregates |
