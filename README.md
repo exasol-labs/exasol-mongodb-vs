@@ -5,7 +5,7 @@
 **Query MongoDB collections from Exasol with ordinary SQL—without copying the collection into relational tables first.**
 
 ![Rust 1.94.1](https://img.shields.io/badge/Rust-1.94.1-000000?logo=rust)
-![MongoDB 8 tested](https://img.shields.io/badge/MongoDB-8-tested-47A248?logo=mongodb&logoColor=white)
+![MongoDB 8 tested](https://img.shields.io/badge/MongoDB-8%20tested-47A248?logo=mongodb&logoColor=white)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Coverage enforced](https://img.shields.io/badge/coverage-%E2%89%A585%25-brightgreen)
 
