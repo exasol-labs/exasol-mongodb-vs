@@ -605,7 +605,7 @@ fn path_prefilter_expression(
                 let Literal::String(literal) = literal else {
                     return None;
                 };
-                return string_path_predicate(path, "$regex", literal);
+                return typed_path_predicate(path, spec, "$eq", Bson::String(literal.clone()));
             }
             if !comparison_exact(spec, *op) {
                 return None;
@@ -625,15 +625,15 @@ fn path_prefilter_expression(
             let spec = known.get(column.as_str())?;
             let path = mongo_dotted_path(table_path, spec)?;
             if spec.bson_kind == Some(BsonKind::String) {
-                let patterns = literals
+                let literals = literals
                     .iter()
                     .map(|literal| match literal {
-                        Literal::String(value) => exasol_string_pattern(value),
+                        Literal::String(value) => Some(Bson::String(value.clone())),
                         _ => None,
                     })
                     .collect::<Option<Vec<_>>>()?;
                 return Some(doc! {
-                    path: {"$type": "string", "$in": Bson::Array(patterns)}
+                    path: {"$type": "string", "$in": Bson::Array(literals)}
                 });
             }
             if !comparison_exact(spec, CompareOp::Equal) {
@@ -719,40 +719,6 @@ fn typed_path_predicate(
         }
         _ => None,
     }
-}
-
-fn string_path_predicate(path: String, operator: &str, literal: &str) -> Option<Document> {
-    Some(doc! {
-        path: {"$type": "string", operator: exasol_string_pattern(literal)?}
-    })
-}
-
-/// Exasol VARCHAR equality ignores trailing ASCII spaces. An anchored MongoDB
-/// regex over the trimmed literal and zero or more spaces is therefore a
-/// necessary condition for `=` and `IN`. Regex metacharacters are escaped so a
-/// SQL literal cannot alter the selector. MongoDB's case-sensitive regex also
-/// avoids inheriting a collection's potentially broader collation.
-fn exasol_string_pattern(literal: &str) -> Option<Bson> {
-    if literal.contains('\0') {
-        return None;
-    }
-    let trimmed = literal.trim_end_matches(' ');
-    let mut pattern = String::with_capacity(trimmed.len() + 5);
-    pattern.push('^');
-    for character in trimmed.chars() {
-        if matches!(
-            character,
-            '\\' | '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}'
-        ) {
-            pattern.push('\\');
-        }
-        pattern.push(character);
-    }
-    pattern.push_str(" *$");
-    Some(Bson::RegularExpression(mongodb::bson::Regex {
-        pattern,
-        options: String::new(),
-    }))
 }
 
 fn type_selector(mut types: Vec<Bson>) -> Bson {
@@ -1018,8 +984,7 @@ fn mongo_prefilter_candidate(
         } => {
             let spec = known.get(column.as_str())?;
             let supported = if spec.bson_kind == Some(BsonKind::String) {
-                *op == CompareOp::Equal
-                    && matches!(literal, Literal::String(value) if !value.contains('\0'))
+                *op == CompareOp::Equal && matches!(literal, Literal::String(_))
             } else {
                 *op != CompareOp::NotEqual
                     && comparison_exact(spec, *op)
@@ -1030,9 +995,9 @@ fn mongo_prefilter_candidate(
         FilterExpr::In { column, literals } => {
             let spec = known.get(column.as_str())?;
             let supported = if spec.bson_kind == Some(BsonKind::String) {
-                literals.iter().all(
-                    |literal| matches!(literal, Literal::String(value) if !value.contains('\0')),
-                )
+                literals
+                    .iter()
+                    .all(|literal| matches!(literal, Literal::String(_)))
             } else {
                 comparison_exact(spec, CompareOp::Equal)
                     && literals
@@ -1979,10 +1944,7 @@ mod tests {
             Some(doc! {
                 "items.name": {
                     "$type": "string",
-                    "$regex": Bson::RegularExpression(mongodb::bson::Regex {
-                        pattern: "^O'Reilly *$".into(),
-                        options: String::new(),
-                    })
+                    "$eq": "O'Reilly"
                 }
             })
         );
@@ -2007,16 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn string_prefilters_escape_regex_and_model_trailing_space_equality() {
-        assert_eq!(
-            exasol_string_pattern("SKU[1].  "),
-            Some(Bson::RegularExpression(mongodb::bson::Regex {
-                pattern: r"^SKU\[1\]\. *$".into(),
-                options: String::new(),
-            }))
-        );
-        assert_eq!(exasol_string_pattern("contains\0nul"), None);
-
+    fn string_in_prefilter_preserves_exact_values_and_trailing_spaces() {
         let request = serde_json::json!({"pushdownRequest": {
             "type":"select",
             "filter":{
@@ -2030,9 +1983,12 @@ mod tests {
         }});
         let query = plan(&request, &columns()).unwrap();
         let prefilter = mongo_path_prefilter(&query.mongo, &columns(), &[]).unwrap();
-        let json = serde_json::to_string(&prefilter).unwrap();
-        assert!(json.contains("^SKU-1 *$"));
-        assert!(json.contains("^SKU-2 *$"));
+        assert_eq!(
+            prefilter,
+            doc! {
+                "name": {"$type": "string", "$in": ["SKU-1", "SKU-2 "]}
+            }
+        );
         assert!(query.mongo.filter.is_none());
     }
 

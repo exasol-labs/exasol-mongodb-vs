@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_string_equality_only_prefilters_before_traversal() {
+    fn nested_string_equality_uses_an_exact_seek_before_traversal() {
         let plan = MongoReadPlan::Nested {
             path: vec![PathSegment {
                 name: "items".into(),
@@ -274,9 +274,14 @@ mod tests {
         };
 
         let pipeline = plan.pipeline_with(&pushdown, &columns).unwrap();
-        let first = serde_json::to_string(&pipeline[0]).unwrap();
-        assert!(first.contains("items.sku"));
-        assert!(first.contains(r"^SKU\\[1\\] *$"));
+        assert_eq!(
+            pipeline.first(),
+            Some(&doc! {
+                "$match": {
+                    "items.sku": {"$type": "string", "$eq": "SKU[1] "}
+                }
+            })
+        );
         let unwind = pipeline
             .iter()
             .position(|stage| stage.contains_key("$unwind"))

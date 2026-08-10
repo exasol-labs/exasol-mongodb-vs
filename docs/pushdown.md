@@ -75,14 +75,13 @@ starting with `$`, plus direct nested-array levels, continue to use `$getField`
 instead of ambiguous dotted syntax.
 
 String equality and constant `IN` receive a dotted-path prefilter as well. The
-connector uses an anchored, escaped, case-sensitive regular expression and
-models Exasol's rule that `VARCHAR` equality ignores trailing ASCII spaces. The
-original predicate remains in the generated Exasol SQL; consequently an early
-`LIMIT`, remote `COUNT(*)`, and other optimizations that require an exact remote
-filter remain disabled. Prefix-anchored expressions can use simple binary
-MongoDB indexes, including multikey indexes. Collation-aware indexes generally
-cannot accelerate `$regex`, but results remain correct because MongoDB's regex
-matching does not inherit a broader collection collation.
+connector emits native `$eq` and `$in` values, producing equality seeks on
+compatible nested-field and multikey indexes rather than prefix range scans.
+Trailing spaces are preserved because Exasol treats them as significant when a
+`VARCHAR` column is compared with a literal. The original predicate remains in
+the generated Exasol SQL as a backstop for collection-collation differences;
+consequently an early `LIMIT`, remote `COUNT(*)`, and other optimizations that
+require an exact remote filter remain disabled.
 
 String inequality and range predicates remain entirely in Exasol because their
 collation and padding order is not assumed equivalent. Double predicates also
