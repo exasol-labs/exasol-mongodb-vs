@@ -6,7 +6,7 @@ delegation rate.
 
 ## Advertised operations
 
-The current capability set covers:
+The capability set covers:
 
 - physical-column projection;
 - boolean composition with `AND`, `OR`, and `NOT`;
@@ -52,6 +52,27 @@ Eligible MongoDB predicates currently include:
 - timestamp predicates converted to BSON DateTime;
 - explicit-null and empty-string preservation masks; and
 - scalar `IS NULL`/`IS NOT NULL` based on the physical branch.
+
+For eligible predicates on nested object or array tables, the scan first renders
+the manifest's typed path segments as a native MongoDB dotted identifier. For
+example, a predicate on `quantity` in the `items[]` table adds an early match of
+the following shape before projecting and unwinding the table rows:
+
+```javascript
+{"items.quantity": {"$type": "int", "$gt": 2}}
+```
+
+That placement lets MongoDB use ordinary nested-field and multikey indexes. The
+normal typed `$expr` predicate still runs after path traversal, so different
+array elements cannot accidentally satisfy the type guard and comparison for a
+single emitted row.
+
+The early match is deliberately conservative. Safe conjuncts may be retained
+from an `AND`; every branch of an `OR` must be representable; and `NOT`, `IS
+NULL`, and `<>` stay in the exact post-traversal filter when array semantics
+could create false negatives. Literal MongoDB field names containing `.` or
+starting with `$`, plus direct nested-array levels, continue to use `$getField`
+instead of ambiguous dotted syntax.
 
 String predicates remain in Exasol because collation and trailing-space rules are
 not assumed equivalent. Double predicates also remain in Exasol until finite and

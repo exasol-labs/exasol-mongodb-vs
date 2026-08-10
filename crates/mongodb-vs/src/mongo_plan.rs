@@ -2,7 +2,7 @@ use mongodb::bson::{Bson, Document, doc};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ColumnSpec, PathKind, PathSegment, TableModel};
-use crate::pushdown::{MongoPushdown, mongo_stages};
+use crate::pushdown::{MongoPushdown, mongo_path_prefilter, mongo_stages};
 
 pub const ROOT_ID_FIELD: &str = "__jt_root_id";
 pub const VALUE_FIELD: &str = "__jt_value";
@@ -44,12 +44,17 @@ impl MongoReadPlan {
         if matches!(self, Self::RootFind) && pushdown.is_empty() {
             return None;
         }
-        let mut pipeline = vec![doc! {
+        let path = self.path();
+        let mut pipeline = Vec::new();
+        if let Some(prefilter) = mongo_path_prefilter(pushdown, columns, path) {
+            pipeline.push(doc! {"$match": prefilter});
+        }
+        pipeline.push(doc! {
             "$project": {
                 ROOT_ID_FIELD: "$_id",
                 VALUE_FIELD: "$$ROOT",
             }
-        }];
+        });
         let (path, table_kind) = match self {
             Self::RootFind => (&[][..], PathKind::Object),
             Self::Nested { path, table_kind } => (path.as_slice(), *table_kind),
@@ -124,7 +129,10 @@ pub fn projected_value(document: &Document) -> Option<&Bson> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pushdown::{AGGREGATE_COUNT_FIELD, MongoAggregation};
+    use crate::model::{BsonKind, ColumnSource, SqlType};
+    use crate::pushdown::{
+        AGGREGATE_COUNT_FIELD, CompareOp, FilterExpr, Literal, MongoAggregation,
+    };
 
     #[test]
     fn count_pipeline_runs_after_root_or_nested_row_expansion() {
@@ -180,6 +188,57 @@ mod tests {
             1
         );
         assert_eq!(plan.array_depth(), 1);
+    }
+
+    #[test]
+    fn nested_filter_uses_dotted_match_before_traversal_and_typed_match_afterwards() {
+        let plan = MongoReadPlan::Nested {
+            path: vec![PathSegment {
+                name: "items".into(),
+                kind: PathKind::Array,
+                direct: false,
+            }],
+            table_kind: PathKind::Array,
+        };
+        let columns = [ColumnSpec {
+            source: ColumnSource::Field {
+                name: "quantity".into(),
+            },
+            exasol_name: "quantity".into(),
+            sql_type: SqlType::Decimal {
+                precision: 10,
+                scale: 0,
+            },
+            bson_kind: Some(BsonKind::Int32),
+        }];
+        let pushdown = MongoPushdown {
+            filter: Some(FilterExpr::Compare {
+                op: CompareOp::Greater,
+                column: "quantity".into(),
+                literal: Literal::ExactNumeric("2".into()),
+            }),
+            ..MongoPushdown::default()
+        };
+
+        let pipeline = plan.pipeline_with(&pushdown, &columns).unwrap();
+        assert_eq!(
+            pipeline.first(),
+            Some(&doc! {
+                "$match": {
+                    "items.quantity": {"$type": "int", "$gt": Bson::Int64(2)}
+                }
+            })
+        );
+        let unwind = pipeline
+            .iter()
+            .position(|stage| stage.contains_key("$unwind"))
+            .unwrap();
+        assert!(pipeline[unwind + 1].contains_key("$match"));
+        assert!(
+            serde_json::to_string(&pipeline[unwind + 1])
+                .unwrap()
+                .contains("$getField")
+        );
     }
 
     #[test]

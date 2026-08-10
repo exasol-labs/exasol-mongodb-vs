@@ -101,7 +101,10 @@ the exact MongoDB source name separately, so fields containing dots, dollars,
 quotes, or connector suffix delimiters remain addressable.
 
 The canonical nested path is stored as typed `pathSegments`; a human-readable
-path string is informational and is not parsed during scans.
+path string is informational and is not parsed during scans. Eligible `WHERE`
+predicates render those typed segments directly as native MongoDB dotted paths,
+allowing nested-field and multikey indexes to participate without treating a
+literal dot in a source field name as a separator.
 
 ## Explicit manifests
 

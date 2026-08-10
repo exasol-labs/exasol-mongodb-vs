@@ -5,7 +5,7 @@ use mongodb::bson::{Bson, DateTime, Document, doc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::model::{BsonKind, ColumnSource, ColumnSpec};
+use crate::model::{BsonKind, ColumnSource, ColumnSpec, PathSegment};
 use crate::mongo_plan::VALUE_FIELD;
 
 pub const AGGREGATE_COUNT_FIELD: &str = "__jt_count";
@@ -518,6 +518,174 @@ pub fn mongo_stages(pushdown: &MongoPushdown, columns: &[ColumnSpec]) -> Vec<Doc
     stages
 }
 
+/// Build a conservative root-document prefilter using MongoDB's native dotted
+/// field paths. The regular typed `$expr` filter is still evaluated after the
+/// table path has been traversed and arrays have been unwound. Consequently,
+/// this stage only needs to be a necessary condition: it may retain extra root
+/// documents, but it must never discard a relational row that the final filter
+/// would accept.
+///
+/// A native path prefilter lets MongoDB use ordinary and multikey indexes for
+/// nested fields. Literal field names containing `.` or starting with `$` stay
+/// on the `$getField` path because dotted query syntax would change their
+/// meaning. Direct nested-array path segments are also declined because MongoDB
+/// dot notation does not encode those structural levels unambiguously.
+pub(crate) fn mongo_path_prefilter(
+    pushdown: &MongoPushdown,
+    columns: &[ColumnSpec],
+    table_path: &[PathSegment],
+) -> Option<Document> {
+    let filter = pushdown.filter.as_ref()?;
+    let known = columns
+        .iter()
+        .map(|column| (column.exasol_name.as_str(), column))
+        .collect::<HashMap<_, _>>();
+    path_prefilter_expression(filter, &known, table_path)
+}
+
+fn path_prefilter_expression(
+    expr: &FilterExpr,
+    known: &HashMap<&str, &ColumnSpec>,
+    table_path: &[PathSegment],
+) -> Option<Document> {
+    match expr {
+        // Every retained conjunct is a necessary condition. Unsupported
+        // conjuncts can therefore be omitted without introducing false
+        // negatives.
+        FilterExpr::And { expressions } => combine_path_prefilters(
+            "$and",
+            expressions
+                .iter()
+                .filter_map(|expr| path_prefilter_expression(expr, known, table_path))
+                .collect(),
+        ),
+        // Every OR branch must have a necessary condition. Dropping one branch
+        // would incorrectly discard documents that satisfy only that branch.
+        FilterExpr::Or { expressions } => {
+            let compiled = expressions
+                .iter()
+                .map(|expr| path_prefilter_expression(expr, known, table_path))
+                .collect::<Option<Vec<_>>>()?;
+            combine_path_prefilters("$or", compiled)
+        }
+        // Negation over an array path is not a safe root prefilter: another
+        // element can satisfy the positive expression while the emitted row
+        // satisfies its negation. The post-unwind typed filter handles it.
+        FilterExpr::Not { .. } => None,
+        FilterExpr::Compare {
+            op,
+            column,
+            literal,
+        } => {
+            if *op == CompareOp::NotEqual {
+                return None;
+            }
+            let spec = known.get(column.as_str())?;
+            let path = mongo_dotted_path(table_path, spec)?;
+            let literal = literal_bson(spec, literal)?;
+            let operator = match op {
+                CompareOp::Equal => "$eq",
+                CompareOp::Less => "$lt",
+                CompareOp::LessEqual => "$lte",
+                CompareOp::Greater => "$gt",
+                CompareOp::GreaterEqual => "$gte",
+                CompareOp::NotEqual => unreachable!(),
+            };
+            typed_path_predicate(path, spec, operator, literal)
+        }
+        FilterExpr::In { column, literals } => {
+            let spec = known.get(column.as_str())?;
+            let path = mongo_dotted_path(table_path, spec)?;
+            let literals = literals
+                .iter()
+                .map(|literal| literal_bson(spec, literal))
+                .collect::<Option<Vec<_>>>()?;
+            typed_path_predicate(path, spec, "$in", Bson::Array(literals))
+        }
+        FilterExpr::IsNull {
+            column,
+            negated: true,
+        } => {
+            let spec = known.get(column.as_str())?;
+            let path = mongo_dotted_path(table_path, spec)?;
+            let types = scalar_type_names(spec)?;
+            Some(doc! {path: {"$type": type_selector(types)}})
+        }
+        FilterExpr::IsNull { .. } => None,
+    }
+}
+
+fn combine_path_prefilters(operator: &str, expressions: Vec<Document>) -> Option<Document> {
+    match expressions.len() {
+        0 => None,
+        1 => expressions.into_iter().next(),
+        _ => Some(doc! {operator: expressions}),
+    }
+}
+
+fn mongo_dotted_path(table_path: &[PathSegment], spec: &ColumnSpec) -> Option<String> {
+    let mut segments = table_path
+        .iter()
+        .map(|segment| {
+            if segment.direct || !mongo_path_segment_safe(&segment.name) {
+                None
+            } else {
+                Some(segment.name.as_str())
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    match &spec.source {
+        ColumnSource::Field { name }
+        | ColumnSource::NullMask { name }
+        | ColumnSource::EmptyStringMask { name } => {
+            if !mongo_path_segment_safe(name) {
+                return None;
+            }
+            segments.push(name);
+        }
+        ColumnSource::Value | ColumnSource::ValueNullMask | ColumnSource::ValueEmptyStringMask => {}
+        _ => return None,
+    }
+    (!segments.is_empty()).then(|| segments.join("."))
+}
+
+fn mongo_path_segment_safe(segment: &str) -> bool {
+    !segment.is_empty() && !segment.contains('.') && !segment.starts_with('$')
+}
+
+fn typed_path_predicate(
+    path: String,
+    spec: &ColumnSpec,
+    operator: &str,
+    literal: Bson,
+) -> Option<Document> {
+    match &spec.source {
+        ColumnSource::Field { .. } | ColumnSource::Value => {
+            let types = scalar_type_names(spec)?;
+            Some(doc! {path: {"$type": type_selector(types), operator: literal}})
+        }
+        ColumnSource::NullMask { .. } | ColumnSource::ValueNullMask
+            if literal == Bson::Boolean(true) && operator == "$eq" =>
+        {
+            Some(doc! {path: {"$type": "null"}})
+        }
+        ColumnSource::EmptyStringMask { .. } | ColumnSource::ValueEmptyStringMask
+            if literal == Bson::Boolean(true) && operator == "$eq" =>
+        {
+            Some(doc! {path: {"$type": "string", "$eq": ""}})
+        }
+        _ => None,
+    }
+}
+
+fn type_selector(mut types: Vec<Bson>) -> Bson {
+    if types.len() == 1 {
+        types.pop().expect("one type")
+    } else {
+        Bson::Array(types)
+    }
+}
+
 fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
     match node.get("type").and_then(Json::as_str) {
         Some("predicate_and" | "predicate_or") => {
@@ -935,17 +1103,7 @@ fn mongo_present(spec: &ColumnSpec, value: Bson) -> Bson {
         | ColumnSource::EmptyStringMask { .. }
         | ColumnSource::ValueEmptyStringMask => Bson::Boolean(true),
         ColumnSource::Field { .. } | ColumnSource::Value => {
-            let types: Vec<Bson> = match spec.bson_kind {
-                Some(BsonKind::Int32) => vec!["int".into()],
-                Some(BsonKind::Int64) => vec!["long".into()],
-                Some(BsonKind::Integer) => vec!["int".into(), "long".into()],
-                Some(BsonKind::Double) => vec!["double".into()],
-                Some(BsonKind::Boolean) => vec!["bool".into()],
-                Some(BsonKind::DateTime) => vec!["date".into()],
-                Some(BsonKind::ObjectId) => vec!["objectId".into()],
-                Some(BsonKind::String) => vec!["string".into()],
-                _ => Vec::new(),
-            };
+            let types = scalar_type_names(spec).unwrap_or_default();
             let type_expr = Bson::Document(doc! {"$type": value.clone()});
             let mut checks = vec![Bson::Document(doc! {"$in": [type_expr, types]})];
             if spec.bson_kind == Some(BsonKind::String) {
@@ -955,6 +1113,20 @@ fn mongo_present(spec: &ColumnSpec, value: Bson) -> Bson {
         }
         _ => Bson::Boolean(true),
     }
+}
+
+fn scalar_type_names(spec: &ColumnSpec) -> Option<Vec<Bson>> {
+    Some(match spec.bson_kind? {
+        BsonKind::Int32 => vec!["int".into()],
+        BsonKind::Int64 => vec!["long".into()],
+        BsonKind::Integer => vec!["int".into(), "long".into()],
+        BsonKind::Double => vec!["double".into()],
+        BsonKind::Boolean => vec!["bool".into()],
+        BsonKind::DateTime => vec!["date".into()],
+        BsonKind::ObjectId => vec!["objectId".into()],
+        BsonKind::String => vec!["string".into()],
+        _ => return None,
+    })
 }
 
 fn literal_bson(spec: &ColumnSpec, literal: &Literal) -> Option<Bson> {
@@ -1439,6 +1611,104 @@ mod tests {
         ] {
             let request = serde_json::json!({"pushdownRequest":{"type":"select","filter":invalid}});
             assert!(plan(&request, &columns()).is_err());
+        }
+    }
+
+    #[test]
+    fn builds_native_dotted_path_prefilter_for_nested_where_identifier() {
+        let request = serde_json::json!({
+            "pushdownRequest": {
+                "type": "select",
+                "filter": {
+                    "type": "predicate_less",
+                    "left": {"type": "column", "name": "age"},
+                    "right": {"type": "literal_exactnumeric", "value": 40}
+                }
+            }
+        });
+        let query = plan(&request, &columns()).unwrap();
+        let path = vec![PathSegment {
+            name: "profile".into(),
+            kind: crate::model::PathKind::Object,
+            direct: false,
+        }];
+
+        assert_eq!(
+            mongo_path_prefilter(&query.mongo, &columns(), &path),
+            Some(doc! {
+                "profile.age": {"$type": "int", "$lt": Bson::Int64(40)}
+            })
+        );
+    }
+
+    #[test]
+    fn dotted_path_prefilter_is_conservative_for_boolean_composition() {
+        let positive = FilterExpr::Compare {
+            op: CompareOp::GreaterEqual,
+            column: "age".into(),
+            literal: Literal::ExactNumeric("18".into()),
+        };
+        let negated = FilterExpr::Not {
+            expression: Box::new(positive.clone()),
+        };
+        let path = [PathSegment {
+            name: "items".into(),
+            kind: crate::model::PathKind::Array,
+            direct: false,
+        }];
+
+        let conjunction = MongoPushdown {
+            filter: Some(FilterExpr::And {
+                expressions: vec![positive.clone(), negated.clone()],
+            }),
+            ..MongoPushdown::default()
+        };
+        assert_eq!(
+            mongo_path_prefilter(&conjunction, &columns(), &path),
+            Some(doc! {
+                "items.age": {"$type": "int", "$gte": Bson::Int64(18)}
+            })
+        );
+
+        let disjunction = MongoPushdown {
+            filter: Some(FilterExpr::Or {
+                expressions: vec![positive, negated],
+            }),
+            ..MongoPushdown::default()
+        };
+        assert_eq!(mongo_path_prefilter(&disjunction, &columns(), &path), None);
+    }
+
+    #[test]
+    fn dotted_path_prefilter_declines_ambiguous_literal_field_names_and_nested_arrays() {
+        let pushdown = MongoPushdown {
+            filter: Some(FilterExpr::Compare {
+                op: CompareOp::Equal,
+                column: "age".into(),
+                literal: Literal::ExactNumeric("18".into()),
+            }),
+            ..MongoPushdown::default()
+        };
+        for path in [
+            vec![PathSegment {
+                name: "literal.name".into(),
+                kind: crate::model::PathKind::Object,
+                direct: false,
+            }],
+            vec![
+                PathSegment {
+                    name: "matrix".into(),
+                    kind: crate::model::PathKind::Array,
+                    direct: false,
+                },
+                PathSegment {
+                    name: String::new(),
+                    kind: crate::model::PathKind::Array,
+                    direct: true,
+                },
+            ],
+        ] {
+            assert_eq!(mongo_path_prefilter(&pushdown, &columns(), &path), None);
         }
     }
 
