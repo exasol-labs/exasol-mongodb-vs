@@ -576,6 +576,21 @@ mod tests {
         assert!(remote_sql.contains("EMITS (\"__jt_count\" DECIMAL(18,0))"));
         assert!(remote_sql.contains("\"aggregation\":{\"kind\":\"count_star\"}"));
 
+        let mut labelled_request = aggregate_request(json!([]));
+        labelled_request["pushdownRequest"]["selectList"] = json!([
+            {"type":"literal_string", "value":"mongodb"},
+            {"type":"function_aggregate", "name":"count", "arguments":[], "distinct":false}
+        ]);
+        labelled_request["pushdownRequest"]["selectListDataTypes"] = json!([
+            {"type":"varchar", "size":7},
+            {"type":"decimal", "precision":18, "scale":0}
+        ]);
+        let labelled = dispatch(&mut context(), &labelled_request).unwrap();
+        let labelled_sql = labelled["sql"].as_str().unwrap();
+        assert!(labelled_sql.starts_with("SELECT 'mongodb', \"__jt_count\""));
+        assert!(labelled_sql.contains("EMITS (\"__jt_count\" DECIMAL(18,0))"));
+        assert!(labelled_sql.contains("\"aggregation\":{\"kind\":\"count_star\"}"));
+
         let local = dispatch(
             &mut context(),
             &aggregate_request(json!([{"type":"column", "name":"name"}])),

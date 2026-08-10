@@ -12,6 +12,12 @@ of transferring the matching documents. MongoDB returns no document when the
 input is empty; the UDF turns that case into one `DECIMAL(18,0)` value of zero to
 preserve SQL aggregate semantics.
 
+Literal projection items may accompany the count in either order, for example
+`SELECT 'mongodb', COUNT(*)` or `SELECT COUNT(*), 1`. They are rendered in the
+outer Exasol projection and require no additional MongoDB output, so the scan
+still emits only its internal count column. Aliases and `UNION ALL` therefore
+work without disabling the remote count.
+
 If a filter cannot be translated exactly, the scan stays row-producing and the
 adapter's generated SQL performs both the filter and `COUNT(*)` in Exasol.
 `COUNT(column)` also follows this exact fallback today. This deliberately keeps
@@ -35,7 +41,7 @@ and the scan emits a single internal `__jt_count` column. A fallback contains
 
 | Exasol shape | MongoDB building block | Status and semantic work |
 |---|---|---|
-| Ungrouped `COUNT(*)` | `$count` | Supported, including exact filters, nested tables, and empty input. |
+| Ungrouped `COUNT(*)` | `$count` | Supported, including exact filters, nested tables, empty input, and accompanying literal projection items. |
 | `COUNT(column)` | `$group` with conditional `$sum` | Executed in Exasol for now. A remote implementation must use the exposed physical branch contract, not MongoDB's generic non-null test. |
 | `COUNT(DISTINCT ...)` and tuple count | `$group` / set expressions | Deferred. Exasol tuple-null and value-equality semantics need an explicit contract, and large distinct sets can exceed MongoDB's group memory limits. |
 | Grouped counts | `$group` | Deferred until group-key null/missing, string collation, BSON variants, output naming, `HAVING`, and ordering are proven equivalent. |

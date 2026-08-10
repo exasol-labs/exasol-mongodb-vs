@@ -25,7 +25,8 @@ aggregation, and execution of joins inside MongoDB are not currently advertised.
 An eligible single-group `COUNT(*)` becomes a MongoDB `$count` stage after any
 exact filter and after nested-table row expansion. This transfers one value
 instead of every matching row. The runtime maps MongoDB's empty aggregate cursor
-to zero, preserving SQL empty-input semantics.
+to zero, preserving SQL empty-input semantics. Constants alongside the count
+remain in the outer Exasol projection and do not disable delegation.
 
 `COUNT(column)` and counts with an inexact filter are accepted but evaluated in
 the generated outer Exasol SQL. See [Aggregation pushdown](aggregation-pushdown.md)

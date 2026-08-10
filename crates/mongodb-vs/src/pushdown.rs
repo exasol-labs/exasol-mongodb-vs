@@ -145,6 +145,7 @@ pub struct SingleGroupAggregation {
 pub enum AggregateExpr {
     CountStar,
     CountColumn { column: String },
+    Constant { literal: Literal },
 }
 
 pub fn plan(request: &Json, columns: &[ColumnSpec]) -> Result<QueryPlan, UdfError> {
@@ -290,8 +291,18 @@ fn plan_single_group(
     }
     let expressions = items
         .iter()
-        .map(parse_count)
+        .map(parse_aggregate_projection)
         .collect::<Result<Vec<_>, _>>()?;
+    if !expressions.iter().any(|expression| {
+        matches!(
+            expression,
+            AggregateExpr::CountStar | AggregateExpr::CountColumn { .. }
+        )
+    }) {
+        return Err(UdfError::User(
+            "aggregate select list has no aggregate function".into(),
+        ));
+    }
     if let Some(output_types) = pushdown.get("selectListDataTypes").and_then(Json::as_array)
         && output_types.len() != expressions.len()
     {
@@ -309,7 +320,7 @@ fn plan_single_group(
         .iter()
         .filter_map(|expression| match expression {
             AggregateExpr::CountColumn { column } => Some(column.clone()),
-            AggregateExpr::CountStar => None,
+            AggregateExpr::CountStar | AggregateExpr::Constant { .. } => None,
         })
         .collect::<Vec<_>>();
     if let Some(filter) = &filter {
@@ -329,9 +340,12 @@ fn plan_single_group(
         .as_ref()
         .and_then(|expression| mongo_prefilter_candidate(expression, known));
     let filter_fully_pushed = filter.is_none() || exact_filter.is_some();
-    let count_star_exact = expressions
-        .iter()
-        .all(|expression| matches!(expression, AggregateExpr::CountStar));
+    let count_star_exact = expressions.iter().all(|expression| {
+        matches!(
+            expression,
+            AggregateExpr::CountStar | AggregateExpr::Constant { .. }
+        )
+    });
     let mongo_aggregation =
         (count_star_exact && filter_fully_pushed).then_some(MongoAggregation::CountStar);
 
@@ -352,7 +366,14 @@ fn plan_single_group(
     })
 }
 
-fn parse_count(node: &Json) -> Result<AggregateExpr, UdfError> {
+fn parse_aggregate_projection(node: &Json) -> Result<AggregateExpr, UdfError> {
+    if node
+        .get("type")
+        .and_then(Json::as_str)
+        .is_some_and(|kind| kind.starts_with("literal_"))
+    {
+        return parse_literal(node).map(|literal| AggregateExpr::Constant { literal });
+    }
     if node.get("type").and_then(Json::as_str) != Some("function_aggregate")
         || !node
             .get("name")
@@ -429,19 +450,23 @@ pub fn render_outer_sql(
         let projection = aggregation
             .expressions
             .iter()
-            .map(|expression| {
-                if remotely_aggregated {
-                    quote_ident(AGGREGATE_COUNT_FIELD)
-                } else {
-                    match expression {
-                        AggregateExpr::CountStar => "COUNT(*)".into(),
-                        AggregateExpr::CountColumn { column } => {
-                            format!("COUNT({})", quote_ident(column))
-                        }
+            .map(|expression| match expression {
+                AggregateExpr::Constant { literal } => render_untyped_literal(literal),
+                AggregateExpr::CountStar if remotely_aggregated => {
+                    Ok(quote_ident(AGGREGATE_COUNT_FIELD))
+                }
+                AggregateExpr::CountStar => Ok("COUNT(*)".into()),
+                AggregateExpr::CountColumn { column } => {
+                    if remotely_aggregated {
+                        Err(UdfError::User(
+                            "remote COUNT plan contains a column count".into(),
+                        ))
+                    } else {
+                        Ok(format!("COUNT({})", quote_ident(column)))
                     }
                 }
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>, _>>()?
             .join(", ");
         let mut sql = format!("SELECT {projection} FROM ({udf_select}) \"MONGO_PUSHDOWN\"");
         if !remotely_aggregated && let Some(filter) = &query.filter {
@@ -1341,6 +1366,10 @@ fn render_filter(
 }
 
 fn render_literal(literal: &Literal, _spec: &ColumnSpec) -> Result<String, UdfError> {
+    render_untyped_literal(literal)
+}
+
+fn render_untyped_literal(literal: &Literal) -> Result<String, UdfError> {
     Ok(match literal {
         Literal::Boolean(value) => {
             if *value {
@@ -1568,6 +1597,56 @@ mod tests {
         );
         let stages = mongo_stages(&query.mongo, &extended_columns());
         assert_eq!(stages, [doc! {"$count": AGGREGATE_COUNT_FIELD}]);
+    }
+
+    #[test]
+    fn constants_alongside_count_star_keep_remote_count_pushdown() {
+        let mut labelled = count_request(vec![]);
+        labelled["pushdownRequest"]["selectList"] = serde_json::json!([
+            {"type":"literal_string", "value":"mongodb"},
+            {"type":"function_aggregate", "name":"count", "arguments":[], "distinct":false},
+            {"type":"literal_exactnumeric", "value":1}
+        ]);
+        labelled["pushdownRequest"]["selectListDataTypes"] = serde_json::json!([
+            {"type":"varchar", "size":8},
+            {"type":"decimal", "precision":18, "scale":0},
+            {"type":"decimal", "precision":1, "scale":0}
+        ]);
+
+        let query = plan(&labelled, &extended_columns()).unwrap();
+        assert_eq!(query.mongo.aggregation, Some(MongoAggregation::CountStar));
+        assert_eq!(
+            query.aggregation,
+            Some(SingleGroupAggregation {
+                expressions: vec![
+                    AggregateExpr::Constant {
+                        literal: Literal::String("mongodb".into())
+                    },
+                    AggregateExpr::CountStar,
+                    AggregateExpr::Constant {
+                        literal: Literal::ExactNumeric("1".into())
+                    }
+                ]
+            })
+        );
+        assert_eq!(
+            render_outer_sql("SELECT scan", &query, &extended_columns()).unwrap(),
+            "SELECT 'mongodb', \"__jt_count\", 1 FROM (SELECT scan) \"MONGO_PUSHDOWN\""
+        );
+        assert_eq!(
+            mongo_stages(&query.mongo, &extended_columns()),
+            [doc! {"$count": AGGREGATE_COUNT_FIELD}]
+        );
+
+        let mut column_count = labelled;
+        column_count["pushdownRequest"]["selectList"][1]["arguments"] =
+            serde_json::json!([{"type":"column", "name":"name"}]);
+        let query = plan(&column_count, &extended_columns()).unwrap();
+        assert_eq!(query.mongo.aggregation, None);
+        assert_eq!(
+            render_outer_sql("SELECT scan", &query, &extended_columns()).unwrap(),
+            "SELECT 'mongodb', COUNT(\"name\"), 1 FROM (SELECT scan) \"MONGO_PUSHDOWN\""
+        );
     }
 
     #[test]
