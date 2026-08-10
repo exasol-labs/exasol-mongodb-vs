@@ -74,9 +74,20 @@ could create false negatives. Literal MongoDB field names containing `.` or
 starting with `$`, plus direct nested-array levels, continue to use `$getField`
 instead of ambiguous dotted syntax.
 
-String predicates remain in Exasol because collation and trailing-space rules are
-not assumed equivalent. Double predicates also remain in Exasol until finite and
-non-finite branches can be guarded without affecting early limits.
+String equality and constant `IN` receive a dotted-path prefilter as well. The
+connector uses an anchored, escaped, case-sensitive regular expression and
+models Exasol's rule that `VARCHAR` equality ignores trailing ASCII spaces. The
+original predicate remains in the generated Exasol SQL; consequently an early
+`LIMIT`, remote `COUNT(*)`, and other optimizations that require an exact remote
+filter remain disabled. Prefix-anchored expressions can use simple binary
+MongoDB indexes, including multikey indexes. Collation-aware indexes generally
+cannot accelerate `$regex`, but results remain correct because MongoDB's regex
+matching does not inherit a broader collection collation.
+
+String inequality and range predicates remain entirely in Exasol because their
+collation and padding order is not assumed equivalent. Double predicates also
+remain in Exasol until finite and non-finite branches can be guarded without
+affecting early limits.
 
 ## Limits and top-N
 

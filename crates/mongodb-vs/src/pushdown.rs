@@ -39,6 +39,11 @@ pub const CAPABILITIES: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MongoPushdown {
+    /// Conservative root-document filter rendered with native dotted paths.
+    /// Unlike `filter`, this need not be semantically complete because Exasol
+    /// still evaluates the original predicate over every retained row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefilter: Option<FilterExpr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<FilterExpr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -51,7 +56,8 @@ pub struct MongoPushdown {
 
 impl MongoPushdown {
     pub fn is_empty(&self) -> bool {
-        self.filter.is_none()
+        self.prefilter.is_none()
+            && self.filter.is_none()
             && self.order_by.is_empty()
             && self.limit.is_none()
             && self.aggregation.is_none()
@@ -225,6 +231,9 @@ pub fn plan(request: &Json, columns: &[ColumnSpec]) -> Result<QueryPlan, UdfErro
         .as_ref()
         .filter(|expression| mongo_filter_exact(expression, &known))
         .cloned();
+    let prefilter = filter
+        .as_ref()
+        .and_then(|expression| mongo_prefilter_candidate(expression, &known));
     let exact_order =
         if !order_by.is_empty() && order_by.iter().all(|key| mongo_sort_exact(key, &known)) {
             order_by.clone()
@@ -243,6 +252,7 @@ pub fn plan(request: &Json, columns: &[ColumnSpec]) -> Result<QueryPlan, UdfErro
         limit,
         aggregation: None,
         mongo: MongoPushdown {
+            prefilter,
             filter: exact_filter,
             order_by: exact_order,
             limit: mongo_limit,
@@ -315,6 +325,9 @@ fn plan_single_group(
         .as_ref()
         .filter(|expression| mongo_filter_exact(expression, known))
         .cloned();
+    let prefilter = filter
+        .as_ref()
+        .and_then(|expression| mongo_prefilter_candidate(expression, known));
     let filter_fully_pushed = filter.is_none() || exact_filter.is_some();
     let count_star_exact = expressions
         .iter()
@@ -330,6 +343,7 @@ fn plan_single_group(
         limit,
         aggregation: Some(SingleGroupAggregation { expressions }),
         mongo: MongoPushdown {
+            prefilter,
             filter: exact_filter,
             order_by: Vec::new(),
             limit: None,
@@ -535,7 +549,9 @@ pub(crate) fn mongo_path_prefilter(
     columns: &[ColumnSpec],
     table_path: &[PathSegment],
 ) -> Option<Document> {
-    let filter = pushdown.filter.as_ref()?;
+    // Older serialized plans have no dedicated prefilter. Falling back to the
+    // exact filter preserves their dotted-path optimization.
+    let filter = pushdown.prefilter.as_ref().or(pushdown.filter.as_ref())?;
     let known = columns
         .iter()
         .map(|column| (column.exasol_name.as_str(), column))
@@ -582,6 +598,18 @@ fn path_prefilter_expression(
             }
             let spec = known.get(column.as_str())?;
             let path = mongo_dotted_path(table_path, spec)?;
+            if spec.bson_kind == Some(BsonKind::String) {
+                if *op != CompareOp::Equal {
+                    return None;
+                }
+                let Literal::String(literal) = literal else {
+                    return None;
+                };
+                return string_path_predicate(path, "$regex", literal);
+            }
+            if !comparison_exact(spec, *op) {
+                return None;
+            }
             let literal = literal_bson(spec, literal)?;
             let operator = match op {
                 CompareOp::Equal => "$eq",
@@ -596,6 +624,21 @@ fn path_prefilter_expression(
         FilterExpr::In { column, literals } => {
             let spec = known.get(column.as_str())?;
             let path = mongo_dotted_path(table_path, spec)?;
+            if spec.bson_kind == Some(BsonKind::String) {
+                let patterns = literals
+                    .iter()
+                    .map(|literal| match literal {
+                        Literal::String(value) => exasol_string_pattern(value),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                return Some(doc! {
+                    path: {"$type": "string", "$in": Bson::Array(patterns)}
+                });
+            }
+            if !comparison_exact(spec, CompareOp::Equal) {
+                return None;
+            }
             let literals = literals
                 .iter()
                 .map(|literal| literal_bson(spec, literal))
@@ -676,6 +719,40 @@ fn typed_path_predicate(
         }
         _ => None,
     }
+}
+
+fn string_path_predicate(path: String, operator: &str, literal: &str) -> Option<Document> {
+    Some(doc! {
+        path: {"$type": "string", operator: exasol_string_pattern(literal)?}
+    })
+}
+
+/// Exasol VARCHAR equality ignores trailing ASCII spaces. An anchored MongoDB
+/// regex over the trimmed literal and zero or more spaces is therefore a
+/// necessary condition for `=` and `IN`. Regex metacharacters are escaped so a
+/// SQL literal cannot alter the selector. MongoDB's case-sensitive regex also
+/// avoids inheriting a collection's potentially broader collation.
+fn exasol_string_pattern(literal: &str) -> Option<Bson> {
+    if literal.contains('\0') {
+        return None;
+    }
+    let trimmed = literal.trim_end_matches(' ');
+    let mut pattern = String::with_capacity(trimmed.len() + 5);
+    pattern.push('^');
+    for character in trimmed.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}'
+        ) {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push_str(" *$");
+    Some(Bson::RegularExpression(mongodb::bson::Regex {
+        pattern,
+        options: String::new(),
+    }))
 }
 
 fn type_selector(mut types: Vec<Bson>) -> Bson {
@@ -908,6 +985,67 @@ fn mongo_filter_exact(expr: &FilterExpr, known: &HashMap<&str, &ColumnSpec>) -> 
                     | ColumnSource::ValueEmptyStringMask
             )
         }),
+    }
+}
+
+fn mongo_prefilter_candidate(
+    expr: &FilterExpr,
+    known: &HashMap<&str, &ColumnSpec>,
+) -> Option<FilterExpr> {
+    match expr {
+        FilterExpr::And { expressions } => {
+            let expressions = expressions
+                .iter()
+                .filter_map(|expression| mongo_prefilter_candidate(expression, known))
+                .collect::<Vec<_>>();
+            match expressions.len() {
+                0 => None,
+                1 => expressions.into_iter().next(),
+                _ => Some(FilterExpr::And { expressions }),
+            }
+        }
+        FilterExpr::Or { expressions } => Some(FilterExpr::Or {
+            expressions: expressions
+                .iter()
+                .map(|expression| mongo_prefilter_candidate(expression, known))
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        FilterExpr::Not { .. } => None,
+        FilterExpr::Compare {
+            op,
+            column,
+            literal,
+        } => {
+            let spec = known.get(column.as_str())?;
+            let supported = if spec.bson_kind == Some(BsonKind::String) {
+                *op == CompareOp::Equal
+                    && matches!(literal, Literal::String(value) if !value.contains('\0'))
+            } else {
+                *op != CompareOp::NotEqual
+                    && comparison_exact(spec, *op)
+                    && literal_bson(spec, literal).is_some()
+            };
+            supported.then(|| expr.clone())
+        }
+        FilterExpr::In { column, literals } => {
+            let spec = known.get(column.as_str())?;
+            let supported = if spec.bson_kind == Some(BsonKind::String) {
+                literals.iter().all(
+                    |literal| matches!(literal, Literal::String(value) if !value.contains('\0')),
+                )
+            } else {
+                comparison_exact(spec, CompareOp::Equal)
+                    && literals
+                        .iter()
+                        .all(|literal| literal_bson(spec, literal).is_some())
+            };
+            supported.then(|| expr.clone())
+        }
+        FilterExpr::IsNull {
+            column,
+            negated: true,
+        } => scalar_type_names(known.get(column.as_str())?).map(|_| expr.clone()),
+        FilterExpr::IsNull { .. } => None,
     }
 }
 
@@ -1496,7 +1634,8 @@ mod tests {
         });
         let inexact = plan(&inexact, &extended_columns()).unwrap();
         assert_eq!(inexact.mongo.aggregation, None);
-        assert!(inexact.mongo.is_empty());
+        assert!(inexact.mongo.prefilter.is_some());
+        assert!(inexact.mongo.filter.is_none());
         assert_eq!(
             render_outer_sql("SELECT scan", &inexact, &extended_columns()).unwrap(),
             "SELECT COUNT(*) FROM (SELECT scan) \"MONGO_PUSHDOWN\" WHERE (\"name\" = 'Ada')"
@@ -1824,16 +1963,77 @@ mod tests {
     }
 
     #[test]
-    fn string_filter_stays_in_outer_exasol_and_blocks_early_limit() {
+    fn string_equality_gets_a_dotted_prefilter_but_stays_in_exasol() {
         let request = serde_json::json!({"pushdownRequest": {"type":"select", "filter":{"type":"predicate_equal","left":{"type":"column","name":"name"},"right":{"type":"literal_string","value":"O'Reilly"}}, "limit":{"numElements":2}}});
-        let plan = plan(&request, &columns()).unwrap();
-        assert!(plan.mongo.filter.is_none());
-        assert!(plan.mongo.limit.is_none());
+        let query = plan(&request, &columns()).unwrap();
+        assert!(query.mongo.prefilter.is_some());
+        assert!(query.mongo.filter.is_none());
+        assert!(query.mongo.limit.is_none());
+        let path = [PathSegment {
+            name: "items".into(),
+            kind: crate::model::PathKind::Array,
+            direct: false,
+        }];
+        assert_eq!(
+            mongo_path_prefilter(&query.mongo, &columns(), &path),
+            Some(doc! {
+                "items.name": {
+                    "$type": "string",
+                    "$regex": Bson::RegularExpression(mongodb::bson::Regex {
+                        pattern: "^O'Reilly *$".into(),
+                        options: String::new(),
+                    })
+                }
+            })
+        );
+        assert!(mongo_stages(&query.mongo, &columns()).is_empty());
         assert!(
-            render_outer_sql("SELECT scan", &plan, &columns())
+            render_outer_sql("SELECT scan", &query, &columns())
                 .unwrap()
                 .contains("'O''Reilly'")
         );
+
+        let range = serde_json::json!({"pushdownRequest": {
+            "type":"select",
+            "filter":{
+                "type":"predicate_less",
+                "left":{"type":"column","name":"name"},
+                "right":{"type":"literal_string","value":"Z"}
+            }
+        }});
+        let range = plan(&range, &columns()).unwrap();
+        assert!(range.mongo.prefilter.is_none());
+        assert!(range.mongo.filter.is_none());
+    }
+
+    #[test]
+    fn string_prefilters_escape_regex_and_model_trailing_space_equality() {
+        assert_eq!(
+            exasol_string_pattern("SKU[1].  "),
+            Some(Bson::RegularExpression(mongodb::bson::Regex {
+                pattern: r"^SKU\[1\]\. *$".into(),
+                options: String::new(),
+            }))
+        );
+        assert_eq!(exasol_string_pattern("contains\0nul"), None);
+
+        let request = serde_json::json!({"pushdownRequest": {
+            "type":"select",
+            "filter":{
+                "type":"predicate_in_constlist",
+                "expression":{"type":"column","name":"name"},
+                "arguments":[
+                    {"type":"literal_string","value":"SKU-1"},
+                    {"type":"literal_string","value":"SKU-2 "}
+                ]
+            }
+        }});
+        let query = plan(&request, &columns()).unwrap();
+        let prefilter = mongo_path_prefilter(&query.mongo, &columns(), &[]).unwrap();
+        let json = serde_json::to_string(&prefilter).unwrap();
+        assert!(json.contains("^SKU-1 *$"));
+        assert!(json.contains("^SKU-2 *$"));
+        assert!(query.mongo.filter.is_none());
     }
 
     #[test]
@@ -1929,7 +2129,10 @@ mod tests {
     fn outer_renderer_preserves_order_nulls_limit_and_declined_filter() {
         let request = serde_json::json!({"pushdownRequest":{"type":"select","selectList":[{"type":"column","name":"name"}],"filter":{"type":"predicate_in_constlist","expression":{"type":"column","name":"name"},"arguments":[{"type":"literal_string","value":"a"},{"type":"literal_string","value":"b"}]},"orderBy":[{"expression":{"type":"column","name":"name"},"isAscending":true,"nullsLast":false}],"limit":{"numElements":4}}});
         let query = plan(&request, &columns()).unwrap();
-        assert!(query.mongo.is_empty());
+        assert!(query.mongo.prefilter.is_some());
+        assert!(query.mongo.filter.is_none());
+        assert!(query.mongo.order_by.is_empty());
+        assert!(query.mongo.limit.is_none());
         let sql = render_outer_sql("SELECT scan", &query, &columns()).unwrap();
         assert!(sql.contains("IN ('a', 'b')"));
         assert!(sql.contains("ORDER BY \"name\" ASC NULLS FIRST LIMIT 4"));

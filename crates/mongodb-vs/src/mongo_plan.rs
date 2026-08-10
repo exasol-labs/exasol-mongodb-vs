@@ -41,12 +41,19 @@ impl MongoReadPlan {
         pushdown: &MongoPushdown,
         columns: &[ColumnSpec],
     ) -> Option<Vec<Document>> {
-        if matches!(self, Self::RootFind) && pushdown.is_empty() {
+        let path = self.path();
+        let prefilter = mongo_path_prefilter(pushdown, columns, path);
+        if matches!(self, Self::RootFind)
+            && prefilter.is_none()
+            && pushdown.filter.is_none()
+            && pushdown.order_by.is_empty()
+            && pushdown.limit.is_none()
+            && pushdown.aggregation.is_none()
+        {
             return None;
         }
-        let path = self.path();
         let mut pipeline = Vec::new();
-        if let Some(prefilter) = mongo_path_prefilter(pushdown, columns, path) {
+        if let Some(prefilter) = prefilter {
             pipeline.push(doc! {"$match": prefilter});
         }
         pipeline.push(doc! {
@@ -238,6 +245,60 @@ mod tests {
             serde_json::to_string(&pipeline[unwind + 1])
                 .unwrap()
                 .contains("$getField")
+        );
+    }
+
+    #[test]
+    fn nested_string_equality_only_prefilters_before_traversal() {
+        let plan = MongoReadPlan::Nested {
+            path: vec![PathSegment {
+                name: "items".into(),
+                kind: PathKind::Array,
+                direct: false,
+            }],
+            table_kind: PathKind::Array,
+        };
+        let columns = [ColumnSpec {
+            source: ColumnSource::Field { name: "sku".into() },
+            exasol_name: "sku".into(),
+            sql_type: SqlType::Varchar { size: 100 },
+            bson_kind: Some(BsonKind::String),
+        }];
+        let pushdown = MongoPushdown {
+            prefilter: Some(FilterExpr::Compare {
+                op: CompareOp::Equal,
+                column: "sku".into(),
+                literal: Literal::String("SKU[1] ".into()),
+            }),
+            ..MongoPushdown::default()
+        };
+
+        let pipeline = plan.pipeline_with(&pushdown, &columns).unwrap();
+        let first = serde_json::to_string(&pipeline[0]).unwrap();
+        assert!(first.contains("items.sku"));
+        assert!(first.contains(r"^SKU\\[1\\] *$"));
+        let unwind = pipeline
+            .iter()
+            .position(|stage| stage.contains_key("$unwind"))
+            .unwrap();
+        assert!(
+            pipeline[unwind + 1..]
+                .iter()
+                .all(|stage| !stage.contains_key("$match"))
+        );
+
+        let unsupported_range = MongoPushdown {
+            prefilter: Some(FilterExpr::Compare {
+                op: CompareOp::Less,
+                column: "sku".into(),
+                literal: Literal::String("Z".into()),
+            }),
+            ..MongoPushdown::default()
+        };
+        assert!(
+            MongoReadPlan::RootFind
+                .pipeline_with(&unsupported_range, &columns)
+                .is_none()
         );
     }
 
