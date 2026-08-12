@@ -133,8 +133,7 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
 
 ### Prerequisites
 
-- an Exasol deployment with Virtual Schema support and a Rust Script Language
-  Container matching SDK 0.21.3 and Rust 1.94.1;
+- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.21.3 and Rust 1.94.1;
 - a MongoDB deployment reachable from the Exasol runtime;
 - permission to install a UDF library and create scripts, connections, and a
   virtual schema; and
