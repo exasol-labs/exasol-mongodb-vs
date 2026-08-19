@@ -31,7 +31,33 @@ expected="__exa_udf_entry_MONGODB_ADAPTER __exa_udf_entry_MONGODB_SCAN"
 }
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-expected_fingerprint="$(tr -d '\r\n' < "$project_dir/rust-udf-fingerprint.txt")"
+if ! sdk_version="$(
+  awk '
+    $0 == "[[package]]" { is_sdk = 0 }
+    $0 == "name = \"exasol-udf-sdk\"" { is_sdk = 1 }
+    is_sdk && /^version = "/ {
+      version = $3
+      gsub(/\"/, "", version)
+      versions[++count] = version
+      is_sdk = 0
+    }
+    END {
+      if (count != 1) exit 1
+      print versions[1]
+    }
+  ' "$project_dir/Cargo.lock"
+)"; then
+  echo "error: Cargo.lock must contain exactly one exasol-udf-sdk package" >&2
+  exit 1
+fi
+
+toolchain_fingerprint="$(tr -d '\r\n' < "$project_dir/rust-udf-fingerprint.txt")"
+[[ "$toolchain_fingerprint" == rustc_* ]] || {
+  echo "error: rust-udf-fingerprint.txt must contain the Rust SLC toolchain fingerprint" >&2
+  exit 1
+}
+
+expected_fingerprint="${sdk_version}:${toolchain_fingerprint}"
 grep -aFq "$expected_fingerprint" "$artifact" || {
   echo "error: artifact does not contain the required Rust SLC fingerprint" >&2
   printf 'expected: %s\n' "$expected_fingerprint" >&2

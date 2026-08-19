@@ -3,7 +3,7 @@
 ## Toolchain
 
 The repository pins Rust 1.94.1 in `rust-toolchain.toml` and the fingerprinted
-Exasol UDF SDK and macro crates to 0.21.3. Install the
+Exasol UDF SDK and macro crates to 0.22.1. Install the
 additional quality tools with:
 
 ```bash
@@ -48,8 +48,10 @@ target/release/libmongodb_vs.so
 ```
 
 The verifier checks that the result is a 64-bit Linux ELF exporting exactly
-`MONGODB_ADAPTER` and `MONGODB_SCAN`, with the SLC fingerprint recorded in
-`rust-udf-fingerprint.txt`. A host-built release library is not a supported
+`MONGODB_ADAPTER` and `MONGODB_SCAN`. It derives the SDK version from
+`Cargo.lock` and combines it with the SLC toolchain fingerprint recorded in
+`rust-udf-fingerprint.txt`, so an SDK upgrade cannot leave a stale expected
+version in the artifact check. A host-built release library is not a supported
 deployment artifact.
 
 ## MongoDB integration test

@@ -133,7 +133,7 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
 
 ### Prerequisites
 
-- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.21.3 and Rust 1.94.1;
+- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.22.1 and Rust 1.94.1;
 - a MongoDB deployment reachable from the Exasol runtime;
 - permission to install a UDF library and create scripts, connections, and a
   virtual schema; and
@@ -151,14 +151,16 @@ environment used for the supported artifact. Do not deploy a host-built library.
 The required Rust SLC fingerprint is:
 
 ```text
-0.21.3:rustc_1.94.1__e408947bf_2026-03-25_
+0.22.1:rustc_1.94.1__e408947bf_2026-03-25_
 ```
 
 Exasol compares this fingerprint exactly. The repository therefore pins both
-`exasol-udf-sdk` and `exasol-udf-macros` to 0.21.3 and Rust to 1.94.1. Register
+`exasol-udf-sdk` and `exasol-udf-macros` to 0.22.1 and Rust to 1.94.1. Register
 a matching SLC and configure the `RUST` language alias to use it before
 installing the scripts; an SLC built for another SDK or compiler version cannot
-load this artifact. `make verify-so` checks the artifact's embedded fingerprint.
+load this artifact. `make verify-so` derives the SDK portion from `Cargo.lock`
+and combines it with the toolchain portion in `rust-udf-fingerprint.txt` before
+checking the artifact.
 
 ### 2. Install the Exasol scripts
 
