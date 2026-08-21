@@ -225,6 +225,11 @@ fn column_value(
     ordinals: &[u64],
 ) -> Result<Value, UdfError> {
     match &column.source {
+        ColumnSource::SourceDocument => string_value(
+            canonical_ext_json(current),
+            &column.sql_type,
+            &column.exasol_name,
+        ),
         ColumnSource::RowId => structural_id_value(
             root_id,
             plan.path(),
@@ -767,6 +772,45 @@ mod tests {
         );
         let drift = Bson::Document(mongodb::bson::doc! {"v": true});
         assert!(validate_advertised_branches(&drift, &columns).is_err());
+    }
+
+    #[test]
+    fn source_document_json_preserves_unadvertised_fields_and_bson_types() {
+        let oid = ObjectId::parse_str("64b64c1f3dce4f58d74f97a1").unwrap();
+        let current = Bson::Document(mongodb::bson::doc! {
+            "known": "value",
+            "outlier_only": {"nested": [1, true, Bson::Null]},
+            "binary": Bson::Binary(Binary {
+                subtype: BinarySubtype::Generic,
+                bytes: vec![0, 1, 2],
+            }),
+            "object_id": oid,
+        });
+        let column = ColumnSpec {
+            source: ColumnSource::SourceDocument,
+            exasol_name: crate::model::SOURCE_JSON_COLUMN.into(),
+            sql_type: SqlType::Varchar { size: 2_000_000 },
+            bson_kind: None,
+        };
+
+        // Selecting only the opaque source document deliberately performs no
+        // inferred-branch validation, so schema outliers remain exportable.
+        validate_advertised_branches(&current, std::slice::from_ref(&column)).unwrap();
+        let Value::String(payload) = column_value(
+            &column,
+            &MongoReadPlan::RootFind,
+            &Bson::ObjectId(oid),
+            &current,
+            &[],
+        )
+        .unwrap() else {
+            panic!("source document must be JSON text");
+        };
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["known"], "value");
+        assert_eq!(json["outlier_only"]["nested"][1], true);
+        assert_eq!(json["object_id"]["$oid"], oid.to_hex());
+        assert_eq!(json["binary"]["$binary"]["base64"], "AAEC");
     }
 
     #[test]

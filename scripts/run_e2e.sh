@@ -331,7 +331,7 @@ if ! jq -e '
     and ($plans[4] | contains("\"pushdown\":{}"))
     and ($plans[5] | contains("WHERE (\"name\" ="))
     and ($plans[5] | contains("LIMIT 1"))
-    and ($plans[5] | contains("\"pushdown\":{}"))
+    and ($plans[5] | contains("\"pushdown\":{\"prefilter\":{"))
     and ($plans[6] | contains("\"op\":\"greater_equal\""))
     and ($plans[6] | contains("\"op\":\"less_equal\""))
     and ($plans[7] | contains("\"op\":\"greater_equal\""))
@@ -343,7 +343,7 @@ if ! jq -e '
     and ($plans[9] | contains("\"op\":\"less_equal\""))
     and ($plans[10] | contains("SELECT COUNT(*)"))
     and ($plans[10] | contains("WHERE (\"name\" ="))
-    and ($plans[10] | contains("\"pushdown\":{}"))
+    and ($plans[10] | contains("\"pushdown\":{\"prefilter\":{"))
     and ($plans[11] | contains("SELECT COUNT(\"note\")"))
     and ($plans[11] | contains("\"pushdown\":{}"))
     and ($plans[12] | contains("\"aggregation\":{\"kind\":\"count_star\"}"))
@@ -351,7 +351,7 @@ if ! jq -e '
     and ($plans[13] | contains("\"kind\":\"or\""))
     and ($plans[14] | contains("\"kind\":\"not\""))
     and ($plans[15] | contains(" OR "))
-    and ($plans[15] | contains("\"pushdown\":{}"))
+    and ($plans[15] | contains("\"pushdown\":{\"prefilter\":{"))
     and ($plans[16] | contains("\"kind\":\"or\""))
     and ($plans[16] | contains("\"aggregation\":{\"kind\":\"count_star\"}"))
 ' <<<"$RESULT" >/dev/null; then
@@ -376,4 +376,18 @@ if [[ "$DRIFT_STATUS" == "0" ]] || ! jq -e '
   exit 1
 fi
 
-echo "E2E passed: JSON-table families, inference, conservative boolean/filter/limit/top-N/count pushdown, SQL three-valued NOT semantics, aggregate fallbacks, stable refresh/joins, drift failure, and secret-free EXPLAIN VIRTUAL."
+# The opaque source-document projection must remain usable for the very row
+# that the inferred scalar projection rejects. This is the contract consumed
+# by Exasol JSON Tables' zero-argument TO_JSON() rewrite.
+DRIFT_JSON_RESULT="$(exasol connect --deployment-dir "$DEPLOYMENT_DIR" --json=compact -c \
+  "SELECT \"__mongodb_source_json\" AS SOURCE_JSON FROM \"$VS_SCHEMA\".\"PEOPLE\" WHERE \"name\" = 'Drift';")"
+if ! jq -e '
+  ([.statements[] | select(.columns == ["SOURCE_JSON"])][0].rows[0][0] | fromjson)
+    | (.name == "Drift" and .value == true and (._id | has("$oid")))
+' <<<"$DRIFT_JSON_RESULT" >/dev/null; then
+  echo "error: source-document projection did not preserve the post-inference outlier" >&2
+  jq -c '.statements[] | {columns,rows,error}' <<<"$DRIFT_JSON_RESULT" >&2 || true
+  exit 1
+fi
+
+echo "E2E passed: JSON-table families, full source JSON including drift outliers, inference, conservative boolean/filter/limit/top-N/count pushdown, SQL three-valued NOT semantics, aggregate fallbacks, stable refresh/joins, drift failure, and secret-free EXPLAIN VIRTUAL."

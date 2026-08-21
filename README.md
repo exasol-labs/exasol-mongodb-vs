@@ -263,6 +263,8 @@ Supported today:
 - nested objects, arrays, and arrays of arrays;
 - ordered array rows and stable parent/child joins;
 - common BSON scalar types and lossless numeric handling;
+- complete root-document export as canonical Extended JSON through JSON Tables'
+  zero-argument `TO_JSON()`, including fields outside the inferred schema;
 - physical-column projection, exact scalar predicates composed with `AND`, `OR`, and `NOT`, null checks, `IN`,
   `LIMIT`, eligible top-N, and ungrouped `COUNT(*)` pushdown; and
 - URI authentication settings plus Exasol connection USER/PASSWORD overrides.

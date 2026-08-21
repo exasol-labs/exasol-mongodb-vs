@@ -794,6 +794,7 @@ fn resolve_manifest(
     let manifest = ExplicitManifest {
         format: MANIFEST_FORMAT.into(),
         version: MANIFEST_VERSION,
+        source_document_column: crate::model::SOURCE_JSON_COLUMN.into(),
         stem: stem.clone(),
         roots: vec![RootSpec {
             table_name: stem.clone(),
@@ -1132,7 +1133,10 @@ fn physical_field_name(source: &str) -> String {
     }
     if !source.is_empty()
         && !source.contains('|')
-        && !matches!(source, "_parent" | "_pos" | "_value")
+        && !matches!(
+            source,
+            "_parent" | "_pos" | "_value" | crate::model::SOURCE_JSON_COLUMN
+        )
     {
         return source.into();
     }
@@ -1146,6 +1150,7 @@ fn physical_field_names(fields: &BTreeMap<String, NodeEvidence>) -> BTreeMap<Str
         "_parent".to_owned(),
         "_pos".to_owned(),
         "_value".to_owned(),
+        crate::model::SOURCE_JSON_COLUMN.to_owned(),
     ]);
     for source in fields.keys() {
         let mut candidate = physical_field_name(source);
@@ -1655,9 +1660,17 @@ mod tests {
         let fields = BTreeMap::from([
             ("_id".into(), NodeEvidence::default()),
             ("mongo_id".into(), NodeEvidence::default()),
+            (
+                crate::model::SOURCE_JSON_COLUMN.into(),
+                NodeEvidence::default(),
+            ),
         ]);
         let names = physical_field_names(&fields);
         assert_ne!(names["_id"], names["mongo_id"]);
+        assert_ne!(
+            names[crate::model::SOURCE_JSON_COLUMN],
+            crate::model::SOURCE_JSON_COLUMN
+        );
         assert!(
             table_name_for(
                 "ROOT",

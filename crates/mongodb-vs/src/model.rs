@@ -7,6 +7,9 @@ use serde_json::{Value as Json, json};
 pub const MANIFEST_FORMAT: &str = "exasol-json-tables-source-manifest";
 pub const MANIFEST_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 1_500_000;
+/// Opaque connector column used by `TO_JSON()` to return the complete source
+/// document without reconstructing it from inferred fields.
+pub const SOURCE_JSON_COLUMN: &str = "__mongodb_source_json";
 const MAX_TABLES: usize = 256;
 const MAX_COLUMNS: usize = 10_000;
 const MAX_DEPTH: usize = 32;
@@ -16,6 +19,8 @@ const MAX_DEPTH: usize = 32;
 pub struct ExplicitManifest {
     pub format: String,
     pub version: u32,
+    #[serde(default = "default_source_document_column")]
+    pub source_document_column: String,
     #[serde(default)]
     pub stem: String,
     #[serde(default)]
@@ -23,6 +28,10 @@ pub struct ExplicitManifest {
     #[serde(default)]
     pub relationships: Vec<RelationshipSpec>,
     pub tables: Vec<TableSpec>,
+}
+
+fn default_source_document_column() -> String {
+    SOURCE_JSON_COLUMN.into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +132,7 @@ pub enum BsonKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ColumnSource {
+    SourceDocument,
     RowId,
     ParentId,
     Position,
@@ -258,6 +268,11 @@ impl ExplicitManifest {
                 self.version
             )));
         }
+        if self.source_document_column != SOURCE_JSON_COLUMN {
+            return Err(user(format!(
+                "MANIFEST sourceDocumentColumn must be '{SOURCE_JSON_COLUMN}'"
+            )));
+        }
         if self.tables.is_empty() || self.tables.len() > MAX_TABLES {
             return Err(user(format!(
                 "MANIFEST must contain 1..={MAX_TABLES} tables"
@@ -340,7 +355,31 @@ impl ExplicitManifest {
     }
 
     pub fn models(&self) -> Result<Vec<TableModel>, UdfError> {
-        self.tables.iter().map(TableSpec::to_model).collect()
+        self.tables
+            .iter()
+            .map(|table| {
+                let mut model = table.to_model()?;
+                if table.path_segments.is_empty() {
+                    if model
+                        .columns
+                        .iter()
+                        .any(|column| column.exasol_name == SOURCE_JSON_COLUMN)
+                    {
+                        return Err(user(format!(
+                            "root table '{}' uses reserved column name '{SOURCE_JSON_COLUMN}'",
+                            table.table_name
+                        )));
+                    }
+                    model.columns.push(ColumnSpec {
+                        source: ColumnSource::SourceDocument,
+                        exasol_name: SOURCE_JSON_COLUMN.into(),
+                        sql_type: SqlType::Varchar { size: 2_000_000 },
+                        bson_kind: None,
+                    });
+                }
+                Ok(model)
+            })
+            .collect()
     }
 }
 
@@ -476,7 +515,8 @@ fn variant_suffix(value: &str) -> Option<BsonKind> {
 
 fn default_bson_kind(source: &ColumnSource, sql_type: &SqlType) -> Option<BsonKind> {
     match source {
-        ColumnSource::RowId
+        ColumnSource::SourceDocument
+        | ColumnSource::RowId
         | ColumnSource::ParentId
         | ColumnSource::Position
         | ColumnSource::NullMask { .. }
@@ -504,6 +544,9 @@ fn validate_column_pair(
     sql_type: &SqlType,
 ) -> Result<(), UdfError> {
     let valid = match source {
+        ColumnSource::SourceDocument => {
+            bson_kind.is_none() && matches!(sql_type, SqlType::Varchar { size: 2_000_000 })
+        }
         ColumnSource::RowId | ColumnSource::ParentId | ColumnSource::ObjectLink { .. } => {
             matches!(
                 sql_type,
@@ -612,6 +655,21 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].columns[0].source, ColumnSource::RowId);
         assert_eq!(
+            models[0].columns.last().unwrap(),
+            &ColumnSpec {
+                source: ColumnSource::SourceDocument,
+                exasol_name: SOURCE_JSON_COLUMN.into(),
+                sql_type: SqlType::Varchar { size: 2_000_000 },
+                bson_kind: None,
+            }
+        );
+        assert!(
+            models[1]
+                .columns
+                .iter()
+                .all(|column| column.source != ColumnSource::SourceDocument)
+        );
+        assert_eq!(
             models[0].columns[1].source,
             ColumnSource::Field { name: "_id".into() }
         );
@@ -646,6 +704,16 @@ mod tests {
                 name: "a,b:c|[]$.".into()
             }
         );
+    }
+
+    #[test]
+    fn rejects_explicit_manifest_collision_with_source_json_contract_column() {
+        let mut input: Json = serde_json::from_str(&manifest_json()).unwrap();
+        input["tables"][0]["columns"][2]["name"] = json!(SOURCE_JSON_COLUMN);
+        let manifest = ExplicitManifest::parse(&input.to_string()).unwrap();
+        let error = manifest.models().unwrap_err().to_string();
+        assert!(error.contains("reserved column name"));
+        assert!(error.contains(SOURCE_JSON_COLUMN));
     }
 
     #[test]

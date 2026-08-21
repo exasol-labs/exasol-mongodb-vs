@@ -1,6 +1,7 @@
 {
   "format": "exasol-json-tables-source-manifest",
   "version": 1,
+  "sourceDocumentColumn": "__mongodb_source_json",
   "generator": "exasol-mongodb-vs-example",
   "stem": "PEOPLE",
   "roots": [

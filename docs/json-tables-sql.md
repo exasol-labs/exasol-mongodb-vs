@@ -282,6 +282,31 @@ source-family masks.
 
 ## Reconstruct JSON documents
 
+For an unmodified MongoDB root document, use zero-argument `TO_JSON()`. It
+returns the source document captured by the connector rather than rebuilding
+the document from inferred columns, so fields and BSON branches that occur only
+in later outlier documents are retained:
+
+```sql
+SELECT TO_JSON() AS source_document_json
+FROM MONGO_DEMO."PEOPLE";
+```
+
+The same call works on `MONGO_JSON."PEOPLE"` after generating a JSON Tables
+wrapper; the wrapper passes the connector contract column through unchanged.
+
+The result is canonical MongoDB Extended JSON. This preserves BSON-specific
+values such as `ObjectId`, `Decimal128`, binary data, dates, and timestamps in
+valid JSON. Exasol limits a `VARCHAR` value to 2,000,000 characters; the query
+fails with the document column and measured length if canonical Extended JSON
+for one MongoDB document exceeds that limit.
+
+Zero-argument `TO_JSON()` is available only on a MongoDB root that exposes the
+connector source-document contract. It is intentionally not available after
+joining, aggregating, or otherwise reshaping rows. For those results, use JSON
+Tables' existing `TO_JSON(*)` or `TO_JSON(column, ...)` reconstruction on an
+ordinary view/table or a wrapped structured-result family.
+
 `TO_JSON(*)` serializes a wrapped root recursively, including its nested object
 and array branches:
 

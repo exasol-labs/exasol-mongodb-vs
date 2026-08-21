@@ -506,9 +506,17 @@ mod tests {
         let tables = response["schemaMetadata"]["tables"].as_array().unwrap();
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0]["name"], "PEOPLE");
+        assert_eq!(
+            tables[0]["columns"].as_array().unwrap().last().unwrap()["name"],
+            crate::model::SOURCE_JSON_COLUMN
+        );
         let notes = response["schemaMetadata"]["adapterNotes"].as_str().unwrap();
         assert!(notes.contains("MONGO_CONN"));
         assert!(notes.contains("\"version\":1"));
+        assert!(notes.contains(&format!(
+            "\"sourceDocumentColumn\":\"{}\"",
+            crate::model::SOURCE_JSON_COLUMN
+        )));
         assert!(!notes.contains("secret-user"));
         assert!(!notes.contains("secret-password"));
         assert!(!notes.contains("mongodb://"));
@@ -546,6 +554,31 @@ mod tests {
         assert!(!sql.contains("secret-user"));
         assert!(!sql.contains("secret-password"));
         assert!(!sql.contains("mongodb://"));
+    }
+
+    #[test]
+    fn pushdown_projects_only_the_opaque_source_document_for_to_json() {
+        let created = dispatch(&mut context(), &create_request()).unwrap();
+        let request = json!({
+            "type": "pushdown",
+            "schemaMetadataInfo": {"adapterNotes": created["schemaMetadata"]["adapterNotes"]},
+            "involvedTables": [{"name": "PEOPLE", "columns": []}],
+            "pushdownRequest": {
+                "type": "select",
+                "selectList": [{"type":"column","name":crate::model::SOURCE_JSON_COLUMN}]
+            },
+        });
+        let response = dispatch(&mut context(), &request).unwrap();
+        let sql = response["sql"].as_str().unwrap();
+        assert!(sql.starts_with(&format!(
+            "SELECT \"{}\" FROM (SELECT \"MONGO_VS\".\"MONGODB_SCAN\"(",
+            crate::model::SOURCE_JSON_COLUMN
+        )));
+        assert!(sql.contains(&format!(
+            "EMITS (\"{}\" VARCHAR(2000000))",
+            crate::model::SOURCE_JSON_COLUMN
+        )));
+        assert!(!sql.contains("unadvertised BSON type"));
     }
 
     #[test]

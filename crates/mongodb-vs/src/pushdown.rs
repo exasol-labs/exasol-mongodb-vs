@@ -703,6 +703,7 @@ fn mongo_dotted_path(table_path: &[PathSegment], spec: &ColumnSpec) -> Option<St
         })
         .collect::<Option<Vec<_>>>()?;
     match &spec.source {
+        ColumnSource::SourceDocument => return None,
         ColumnSource::Field { name }
         | ColumnSource::NullMask { name }
         | ColumnSource::EmptyStringMask { name } => {
@@ -1202,6 +1203,7 @@ fn mongo_expression_negated(expr: &FilterExpr, known: &HashMap<&str, &ColumnSpec
 
 fn mongo_column_value(spec: &ColumnSpec) -> Bson {
     match &spec.source {
+        ColumnSource::SourceDocument => Bson::String(format!("${VALUE_FIELD}")),
         ColumnSource::Field { name }
         | ColumnSource::ObjectLink { name }
         | ColumnSource::ArrayLength { name } => Bson::Document(
@@ -1444,6 +1446,7 @@ fn involved_columns(request: &Json) -> Option<Vec<String>> {
 
 fn branch_source(source: &ColumnSource) -> Option<(bool, &str)> {
     match source {
+        ColumnSource::SourceDocument => None,
         ColumnSource::Field { name }
         | ColumnSource::ObjectLink { name }
         | ColumnSource::ArrayLength { name } => Some((false, name)),
