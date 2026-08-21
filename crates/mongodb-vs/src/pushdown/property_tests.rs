@@ -9,6 +9,14 @@ use crate::model::{BsonKind, ColumnSource, ColumnSpec, SqlType};
 fn columns() -> Vec<ColumnSpec> {
     vec![
         ColumnSpec {
+            source: ColumnSource::Field {
+                name: "score".into(),
+            },
+            exasol_name: "score|double".into(),
+            sql_type: SqlType::Double,
+            bson_kind: Some(BsonKind::Double),
+        },
+        ColumnSpec {
             source: ColumnSource::Field { name: "age".into() },
             exasol_name: "age".into(),
             sql_type: SqlType::Decimal {
@@ -127,5 +135,33 @@ proptest! {
         prop_assert!(quoted.starts_with('\''));
         prop_assert!(quoted.ends_with('\''));
         prop_assert_eq!(&quoted[1..quoted.len() - 1], value.replace('\'', "''"));
+    }
+
+    #[test]
+    fn finite_double_literals_round_trip_into_exact_typed_pushdown(value in any::<f64>().prop_filter(
+        "non-finite doubles use a separate BSON branch",
+        |value| value.is_finite(),
+    )) {
+        let available_columns = columns();
+        let spec = available_columns
+            .iter()
+            .find(|column| column.exasol_name == "score|double")
+            .unwrap();
+        let literal = Literal::Double(value.to_string());
+
+        let Some(Bson::Double(converted)) = literal_bson(spec, &literal) else {
+            return Err(TestCaseError::fail("finite double literal was declined"));
+        };
+        prop_assert_eq!(converted.to_bits(), value.to_bits());
+        for op in [
+            CompareOp::Equal,
+            CompareOp::NotEqual,
+            CompareOp::Less,
+            CompareOp::LessEqual,
+            CompareOp::Greater,
+            CompareOp::GreaterEqual,
+        ] {
+            prop_assert!(comparison_exact(spec, op));
+        }
     }
 }

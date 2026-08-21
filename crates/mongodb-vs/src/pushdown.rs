@@ -734,7 +734,11 @@ fn typed_path_predicate(
     match &spec.source {
         ColumnSource::Field { .. } | ColumnSource::Value => {
             let types = scalar_type_names(spec)?;
-            Some(doc! {path: {"$type": type_selector(types), operator: literal}})
+            let mut predicate = doc! {"$type": type_selector(types), operator: literal};
+            if spec.bson_kind == Some(BsonKind::Double) {
+                predicate.insert("$nin", non_finite_double_values());
+            }
+            Some(doc! {path: predicate})
         }
         ColumnSource::NullMask { .. } | ColumnSource::ValueNullMask
             if literal == Bson::Boolean(true) && operator == "$eq" =>
@@ -756,6 +760,14 @@ fn type_selector(mut types: Vec<Bson>) -> Bson {
     } else {
         Bson::Array(types)
     }
+}
+
+fn non_finite_double_values() -> Bson {
+    Bson::Array(vec![
+        Bson::Double(f64::NAN),
+        Bson::Double(f64::INFINITY),
+        Bson::Double(f64::NEG_INFINITY),
+    ])
 }
 
 fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
@@ -1057,6 +1069,7 @@ fn comparison_exact(spec: &ColumnSpec, op: CompareOp) -> bool {
                 BsonKind::Int32
                 | BsonKind::Int64
                 | BsonKind::Integer
+                | BsonKind::Double
                 | BsonKind::Boolean
                 | BsonKind::DateTime
                 | BsonKind::ObjectId,
@@ -1241,6 +1254,10 @@ fn mongo_present(spec: &ColumnSpec, value: Bson) -> Bson {
             let mut checks = vec![Bson::Document(doc! {"$in": [type_expr, types]})];
             if spec.bson_kind == Some(BsonKind::String) {
                 checks.push(Bson::Document(doc! {"$ne": [value, ""]}));
+            } else if spec.bson_kind == Some(BsonKind::Double) {
+                checks.push(Bson::Document(doc! {
+                    "$not": [{"$in": [value, non_finite_double_values()]}]
+                }));
             }
             Bson::Document(doc! {"$and": checks})
         }
@@ -1487,6 +1504,39 @@ mod property_tests;
 mod tests {
     use super::*;
     use crate::model::SqlType;
+
+    fn assert_finite_double_path_predicate(
+        predicate: &Document,
+        path: &str,
+        operator: &str,
+        expected: f64,
+    ) {
+        let field = predicate.get_document(path).unwrap();
+        assert_eq!(field.get_str("$type"), Ok("double"));
+        assert_eq!(field.get_f64(operator), Ok(expected));
+        let excluded = field.get_array("$nin").unwrap();
+        assert_eq!(excluded.len(), 3);
+        assert!(
+            excluded
+                .iter()
+                .any(|value| value.as_f64().is_some_and(f64::is_nan))
+        );
+        assert!(excluded.contains(&Bson::Double(f64::INFINITY)));
+        assert!(excluded.contains(&Bson::Double(f64::NEG_INFINITY)));
+    }
+
+    fn collect_doubles(value: &Bson, output: &mut Vec<f64>) {
+        match value {
+            Bson::Double(value) => output.push(*value),
+            Bson::Document(document) => document
+                .values()
+                .for_each(|value| collect_doubles(value, output)),
+            Bson::Array(values) => values
+                .iter()
+                .for_each(|value| collect_doubles(value, output)),
+            _ => {}
+        }
+    }
 
     fn columns() -> Vec<ColumnSpec> {
         vec![
@@ -1784,8 +1834,8 @@ mod tests {
     }
 
     #[test]
-    fn between_is_all_or_nothing_and_rejects_invalid_shapes() {
-        let inexact = serde_json::json!({
+    fn double_between_is_exact_and_invalid_between_shapes_are_rejected() {
+        let double_range = serde_json::json!({
             "pushdownRequest": {
                 "type": "select",
                 "filter": {
@@ -1797,9 +1847,13 @@ mod tests {
                 "limit": {"numElements": 1}
             }
         });
-        let query = plan(&inexact, &extended_columns()).unwrap();
-        assert!(query.mongo.filter.is_none());
-        assert!(query.mongo.limit.is_none());
+        let query = plan(&double_range, &extended_columns()).unwrap();
+        assert!(query.mongo.filter.is_some());
+        assert_eq!(query.mongo.limit, Some(1));
+        let prefilter = mongo_path_prefilter(&query.mongo, &extended_columns(), &[]).unwrap();
+        let ranges = prefilter.get_array("$and").unwrap();
+        assert_finite_double_path_predicate(ranges[0].as_document().unwrap(), "score", "$gte", 1.5);
+        assert_finite_double_path_predicate(ranges[1].as_document().unwrap(), "score", "$lte", 2.5);
 
         for invalid in [
             serde_json::json!({"type":"predicate_between","expression":{"type":"literal_exactnumeric","value":1},"left":{"type":"literal_exactnumeric","value":0},"right":{"type":"literal_exactnumeric","value":2}}),
@@ -2193,7 +2247,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_object_id_and_timestamp_but_declines_double_literals() {
+    fn converts_object_id_timestamp_and_finite_double_literals() {
         let oid = "0123456789abcdef01234567";
         let request = serde_json::json!({"pushdownRequest":{"type":"select","filter":{"type":"predicate_and","expressions":[
         {"type":"predicate_equal","left":{"type":"column","name":"mongo_id"},"right":{"type":"literal_string","value":oid}},
@@ -2206,8 +2260,35 @@ mod tests {
 
         let double = serde_json::json!({"pushdownRequest":{"type":"select","filter":{"type":"predicate_equal","left":{"type":"column","name":"score"},"right":{"type":"literal_double","value":"1.25"}},"limit":{"numElements":1}}});
         let double = plan(&double, &extended_columns()).unwrap();
-        assert!(double.mongo.filter.is_none());
-        assert!(double.mongo.limit.is_none());
+        assert!(double.mongo.filter.is_some());
+        assert_eq!(double.mongo.limit, Some(1));
+        assert_finite_double_path_predicate(
+            &mongo_path_prefilter(&double.mongo, &extended_columns(), &[]).unwrap(),
+            "score",
+            "$eq",
+            1.25,
+        );
+        let stages = mongo_stages(&double.mongo, &extended_columns());
+        let mongo = serde_json::to_string(&stages).unwrap();
+        assert!(mongo.contains("double"));
+        assert!(mongo.contains("$eq"));
+        assert!(mongo.contains("$not"));
+        let mut guarded_values = Vec::new();
+        collect_doubles(
+            &Bson::Array(stages.into_iter().map(Bson::Document).collect()),
+            &mut guarded_values,
+        );
+        assert!(guarded_values.iter().any(|value| value.is_nan()));
+        assert!(guarded_values.contains(&f64::INFINITY));
+        assert!(guarded_values.contains(&f64::NEG_INFINITY));
+
+        for value in ["NaN", "inf", "-inf", "1e9999"] {
+            let request = serde_json::json!({"pushdownRequest":{"type":"select","filter":{"type":"predicate_less","left":{"type":"column","name":"score"},"right":{"type":"literal_double","value":value}},"limit":{"numElements":1}}});
+            let query = plan(&request, &extended_columns()).unwrap();
+            assert!(query.mongo.filter.is_none(), "{value}");
+            assert!(query.mongo.prefilter.is_none(), "{value}");
+            assert!(query.mongo.limit.is_none(), "{value}");
+        }
     }
 
     #[test]

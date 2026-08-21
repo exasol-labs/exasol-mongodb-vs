@@ -48,6 +48,7 @@ negation preserves SQL three-valued `WHERE` semantics. MongoDB's query-level
 Eligible MongoDB predicates currently include:
 
 - integer comparisons with BSON type guards;
+- finite double comparisons with BSON `double` type guards;
 - boolean predicates;
 - ObjectId predicates converted from their exposed hex strings;
 - timestamp predicates converted to BSON DateTime;
@@ -85,9 +86,11 @@ consequently an early `LIMIT`, remote `COUNT(*)`, and other optimizations that
 require an exact remote filter remain disabled.
 
 String inequality and range predicates remain entirely in Exasol because their
-collation and padding order is not assumed equivalent. Double predicates also
-remain in Exasol until finite and non-finite branches can be guarded without
-affecting early limits.
+collation and padding order is not assumed equivalent. Finite doubles use their
+own inferred branch and a `double` type guard, while NaN and infinities remain
+in the separate non-finite branch. This makes equality, range, `BETWEEN`, and
+constant `IN` exact for the finite `DOUBLE` column without admitting other BSON
+numeric types.
 
 ## Limits and top-N
 

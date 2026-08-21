@@ -70,6 +70,18 @@ docker exec "$container" mongosh --quiet \
       });
     }
     db.deterministic_samples.insertMany(deterministicSamples);
+    db.createCollection("double_pushdown");
+    const doublePushdown = [];
+    for (let id = 0; id < 1000; id++) {
+      doublePushdown.push({_id: id, score: id + 0.5});
+    }
+    doublePushdown.push({_id: 1000, score: NumberInt(100)});
+    doublePushdown.push({_id: 1001, score: "100.5"});
+    doublePushdown.push({_id: 1002, score: NaN});
+    doublePushdown.push({_id: 1003, score: Infinity});
+    doublePushdown.push({_id: 1004, score: -Infinity});
+    db.double_pushdown.insertMany(doublePushdown);
+    db.double_pushdown.createIndex({score: 1}, {name: "score_double"});
     db.createRole({
       role: "sampleOnly",
       privileges: [{resource: {db: "inference", collection: "people"}, actions: ["find"]}],

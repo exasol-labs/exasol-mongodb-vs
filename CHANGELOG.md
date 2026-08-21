@@ -23,3 +23,5 @@ All notable changes to this project are documented here. The format follows
 - Adversarial schema-inference defects AVS-001 through AVS-006, including
   structural unions, mixed arrays, deterministic sampling, index evidence, and
   bounded Exasol identifiers.
+- Double-typed predicates now receive exact, BSON-type-guarded MongoDB pushdown
+  instead of transferring the full collection for Exasol-side filtering.
