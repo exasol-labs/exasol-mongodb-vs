@@ -1,5 +1,6 @@
 COVERAGE_MIN_LINES ?= 85
 COVERAGE_MIN_FUNCTIONS ?= 75
+COVERAGE_MIN_REGIONS ?= 85
 COVERAGE_REPORT ?= target/coverage/lcov.info
 
 .PHONY: test check quality fmt-check lint-rust lint-shell dependencies coverage \
@@ -29,10 +30,12 @@ check: fmt-check lint-rust
 coverage:
 	@command -v cargo-llvm-cov >/dev/null || { echo "error: cargo-llvm-cov is required" >&2; exit 1; }
 	@mkdir -p $(dir $(COVERAGE_REPORT))
-	cargo llvm-cov --locked --workspace --all-features \
+	cargo llvm-cov --locked --workspace --all-features --no-report
+	cargo llvm-cov report --lcov --output-path $(COVERAGE_REPORT)
+	cargo llvm-cov report --summary-only \
 		--fail-under-lines $(COVERAGE_MIN_LINES) \
 		--fail-under-functions $(COVERAGE_MIN_FUNCTIONS) \
-		--lcov --output-path $(COVERAGE_REPORT)
+		--fail-under-regions $(COVERAGE_MIN_REGIONS)
 
 # Reproducible pre-merge gate: source lint, shell lint, dependency policy, tests,
 # and coverage regression protection.

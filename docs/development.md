@@ -26,8 +26,10 @@ make quality    # complete pre-merge gate
 
 `make quality` runs locked-dependency builds, formatting, Clippy with all
 warnings denied, ShellCheck, dependency advisory/license/source policy, and all
-tests under LLVM coverage. It enforces at least 85% line coverage and 75%
-function coverage. LCOV output is written to `target/coverage/lcov.info`.
+tests under LLVM coverage. It enforces at least 85% line and region coverage and
+75% function coverage. The per-file summary is printed in the gate log, and
+LCOV output is written to `target/coverage/lcov.info` before thresholds are
+evaluated so failed coverage gates remain diagnosable.
 
 The GitHub Actions workflow runs the same quality gate, MongoDB inference
 integration tests, and an independent Linux artifact check. Workflow actions and
