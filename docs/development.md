@@ -37,6 +37,37 @@ suite. The quality gate runs these separately from LLVM instrumentation so test
 harness code cannot inflate production coverage. A failing case is
 automatically reduced to a minimal reproducible input.
 
+## Optional release fuzzing
+
+Before a major release, run the coverage-guided parser and planner campaigns:
+
+```bash
+cargo install cargo-fuzz --version 0.13.2 --locked # first use only
+make fuzz-replay
+make fuzz-release
+```
+
+`fuzz-replay` deterministically checks every committed corpus entry.
+`fuzz-release` then runs each target for five minutes by default (15 minutes in
+total). Override the per-target duration when appropriate, for example:
+
+```bash
+FUZZ_MAX_TOTAL_TIME=1800 make fuzz-release
+```
+
+The targets exercise explicit-manifest parsing, scan-spec parsing and
+round-tripping, and pushdown planning/rendering. Inputs are capped at 64 KiB to
+keep mutation throughput high; deterministic unit tests continue to own the
+larger protocol-size boundaries. Target-specific dictionaries help libFuzzer
+preserve the JSON protocol vocabulary while mutating structure and values.
+
+Fuzzing has an independent workspace and a pinned nightly toolchain because
+`cargo-fuzz`/libFuzzer require nightly compiler instrumentation. It is
+intentionally not part of `make quality`, normal CI, or coverage calculations.
+When a campaign finds a failure, reproduce it with the command printed by
+`cargo-fuzz`, add a focused unit regression test, and retain a minimized corpus
+input when it reaches a distinct path.
+
 The GitHub Actions workflow runs the same quality gate, MongoDB inference
 integration tests, and an independent Linux artifact check. Workflow actions and
 auxiliary Rust tools are pinned.

@@ -1,0 +1,1 @@
+{"pushdownRequest":{"type":"select","aggregationType":"single_group","selectList":[{"type":"function_aggregate","name":"count","arguments":[],"distinct":false}],"selectListDataTypes":[{"type":"decimal","precision":18,"scale":0}],"filter":{"type":"predicate_equal","left":{"type":"column","name":"active"},"right":{"type":"literal_bool","value":true}}}}

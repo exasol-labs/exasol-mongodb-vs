@@ -2,9 +2,15 @@ COVERAGE_MIN_LINES ?= 90
 COVERAGE_MIN_FUNCTIONS ?= 85
 COVERAGE_MIN_REGIONS ?= 90
 COVERAGE_REPORT ?= target/coverage/lcov.info
+FUZZ_TOOLCHAIN ?= nightly-2026-08-01
+FUZZ_MAX_TOTAL_TIME ?= 300
+FUZZ_MAX_LEN ?= 65536
+FUZZ_TIMEOUT ?= 10
+FUZZ_RSS_LIMIT_MB ?= 2048
+FUZZ_TARGETS := manifest_parse scan_spec_parse pushdown_plan
 
 .PHONY: test property-tests check quality fmt-check lint-rust lint-shell dependencies coverage \
-	build-so verify-so test-integration test-e2e
+	build-so verify-so test-integration test-e2e fuzz-replay fuzz-release
 
 # Fast developer loop. Coverage deliberately owns the authoritative test run in
 # `quality`, so the full gate does not execute the suite twice.
@@ -46,6 +52,22 @@ coverage:
 # Reproducible pre-merge gate: source lint, shell lint, dependency policy, tests,
 # and coverage regression protection.
 quality: check lint-shell dependencies property-tests coverage
+
+# Fuzzing is an explicit release activity. It uses its own nightly workspace and
+# is deliberately not a dependency of the stable, deterministic quality gate.
+fuzz-replay:
+	@command -v cargo-fuzz >/dev/null || { echo "error: cargo-fuzz is required (cargo install cargo-fuzz --version 0.13.2 --locked)" >&2; exit 1; }
+	@for target in $(FUZZ_TARGETS); do \
+		echo "replaying fuzz corpus: $$target"; \
+		(cd fuzz && cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target corpus/$$target -- -runs=0 -max_len=$(FUZZ_MAX_LEN) -dict=dictionaries/$$target.dict) || exit $$?; \
+	done
+
+fuzz-release:
+	@command -v cargo-fuzz >/dev/null || { echo "error: cargo-fuzz is required (cargo install cargo-fuzz --version 0.13.2 --locked)" >&2; exit 1; }
+	@for target in $(FUZZ_TARGETS); do \
+		echo "fuzzing $$target for up to $(FUZZ_MAX_TOTAL_TIME) seconds"; \
+		(cd fuzz && cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target corpus/$$target -- -max_total_time=$(FUZZ_MAX_TOTAL_TIME) -max_len=$(FUZZ_MAX_LEN) -timeout=$(FUZZ_TIMEOUT) -rss_limit_mb=$(FUZZ_RSS_LIMIT_MB) -dict=dictionaries/$$target.dict) || exit $$?; \
+	done
 
 # Build in the same Debian/glibc environment as the working Rust SLC. A host
 # release artifact is not a supported Exasol deployment artifact.

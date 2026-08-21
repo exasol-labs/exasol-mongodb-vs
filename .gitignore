@@ -1,5 +1,7 @@
 # Rust build and coverage output
 /target/
+/fuzz/target/
+/fuzz/artifacts/
 /coverage/
 /lcov.info
 *.profraw

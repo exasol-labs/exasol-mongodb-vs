@@ -1,0 +1,1 @@
+{"pushdownRequest":{"type":"select","selectList":[{"type":"column","name":"unknown"}],"filter":{"type":"predicate_or","expressions":[null,{},[],{"type":"predicate_in_constlist","expression":{"type":"column","name":"name"},"arguments":[]}]},"limit":{"numElements":-1}}}

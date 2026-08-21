@@ -1,0 +1,1 @@
+{"version":1,"connection_name":"MONGO_CONN","database":"demo","collection":"people","plan":{"kind":"root_find"},"columns":[{"source":{"kind":"field","name":"_id"},"exasol_name":"mongo_id","sql_type":{"kind":"varchar","size":24},"bson_kind":"OBJECT_ID"}],"batch_size":128,"inference_fingerprint":""}
