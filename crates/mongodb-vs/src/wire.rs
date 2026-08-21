@@ -84,6 +84,10 @@ impl MongoScanSpec {
     }
 }
 
+#[cfg(all(test, not(coverage)))]
+#[path = "wire/property_tests.rs"]
+mod property_tests;
+
 #[cfg(test)]
 mod tests {
     use crate::model::{BsonKind, ColumnSource, SqlType};

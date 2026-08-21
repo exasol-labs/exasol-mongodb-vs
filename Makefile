@@ -3,13 +3,18 @@ COVERAGE_MIN_FUNCTIONS ?= 75
 COVERAGE_MIN_REGIONS ?= 85
 COVERAGE_REPORT ?= target/coverage/lcov.info
 
-.PHONY: test check quality fmt-check lint-rust lint-shell dependencies coverage \
+.PHONY: test property-tests check quality fmt-check lint-rust lint-shell dependencies coverage \
 	build-so verify-so test-integration test-e2e
 
 # Fast developer loop. Coverage deliberately owns the authoritative test run in
 # `quality`, so the full gate does not execute the suite twice.
 test:
 	cargo test --locked --workspace --all-features
+
+# Run generated cases outside LLVM instrumentation so macro-expanded test
+# harnesses cannot inflate production coverage percentages.
+property-tests:
+	cargo test --locked --workspace --all-features property_tests::
 
 fmt-check:
 	cargo fmt --all -- --check
@@ -30,6 +35,7 @@ check: fmt-check lint-rust
 coverage:
 	@command -v cargo-llvm-cov >/dev/null || { echo "error: cargo-llvm-cov is required" >&2; exit 1; }
 	@mkdir -p $(dir $(COVERAGE_REPORT))
+	cargo llvm-cov clean --workspace
 	cargo llvm-cov --locked --workspace --all-features --no-report
 	cargo llvm-cov report --lcov --output-path $(COVERAGE_REPORT)
 	cargo llvm-cov report --summary-only \
@@ -39,7 +45,7 @@ coverage:
 
 # Reproducible pre-merge gate: source lint, shell lint, dependency policy, tests,
 # and coverage regression protection.
-quality: check lint-shell dependencies coverage
+quality: check lint-shell dependencies property-tests coverage
 
 # Build in the same Debian/glibc environment as the working Rust SLC. A host
 # release artifact is not a supported Exasol deployment artifact.

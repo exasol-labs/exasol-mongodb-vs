@@ -1476,6 +1476,10 @@ fn quote_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+#[cfg(all(test, not(coverage)))]
+#[path = "pushdown/property_tests.rs"]
+mod property_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

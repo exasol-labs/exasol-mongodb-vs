@@ -31,6 +31,12 @@ tests under LLVM coverage. It enforces at least 85% line and region coverage and
 LCOV output is written to `target/coverage/lcov.info` before thresholds are
 evaluated so failed coverage gates remain diagnosable.
 
+Core inference, pushdown, BSON conversion, SQL quoting, and wire-format
+invariants also run as bounded `proptest` cases within the normal Rust test
+suite. The quality gate runs these separately from LLVM instrumentation so test
+harness code cannot inflate production coverage. A failing case is
+automatically reduced to a minimal reproducible input.
+
 The GitHub Actions workflow runs the same quality gate, MongoDB inference
 integration tests, and an independent Linux artifact check. Workflow actions and
 auxiliary Rust tools are pinned.

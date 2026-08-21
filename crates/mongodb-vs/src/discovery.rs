@@ -1379,6 +1379,10 @@ fn user(message: impl Into<String>) -> UdfError {
     UdfError::User(message.into())
 }
 
+#[cfg(all(test, not(coverage)))]
+#[path = "discovery/property_tests.rs"]
+mod property_tests;
+
 #[cfg(test)]
 mod tests {
     use mongodb::bson::{Binary, oid::ObjectId, spec::BinarySubtype};

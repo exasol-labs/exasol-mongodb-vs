@@ -572,15 +572,18 @@ fn mongo_error(operation: &str) -> UdfError {
     UdfError::User(format!("MongoDB error while {operation}"))
 }
 
+#[cfg(all(test, not(coverage)))]
+#[path = "scan/property_tests.rs"]
+mod property_tests;
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
+    use super::*;
     use mongodb::bson::{
         Binary, DateTime, Decimal128, Timestamp, oid::ObjectId, spec::BinarySubtype,
     };
-
-    use super::*;
 
     fn scalar(name: &str, source: ColumnSource, kind: BsonKind, sql_type: SqlType) -> ColumnSpec {
         ColumnSpec {

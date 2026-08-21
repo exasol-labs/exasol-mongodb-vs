@@ -8,6 +8,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+
 [dependencies]
 chrono = "0.4"
 exasol-udf-sdk = "=0.22.1"
@@ -18,3 +21,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
