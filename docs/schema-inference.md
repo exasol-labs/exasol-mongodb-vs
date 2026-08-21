@@ -37,6 +37,14 @@ Index evidence retains ordered key paths and key kinds together with `unique`,
 `sparse`, partial-filter, and hidden attributes. Index literals can add evidence,
 but indexes do not fabricate collection values or scalar types.
 
+Safe conjunctive partial-filter predicates contribute possible type branches:
+`$type`, `$eq`, `$in`, and direct scalar equality are supported, including
+predicates inside `$and`. This evidence is always optional—`$exists` or
+equality in a partial index never makes a field globally required. Dotted
+predicates create the optional object path needed to expose their leaf.
+Top-level disjunctions remain fingerprinted, produce a warning, and are not
+approximated.
+
 MongoDB represents text indexes internally as `_fts` and `_ftsx` keys. The
 connector reconstructs their user-facing source paths from the index `weights`
 metadata and reports those paths with kind `text`. If a server omits the source

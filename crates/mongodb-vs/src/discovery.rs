@@ -373,7 +373,7 @@ fn extract_validator(
     if let Ok(schema) = validator.get_document("$jsonSchema") {
         extract_schema(schema, root, true, 0, max_depth, warnings);
     }
-    extract_query_predicates(validator, root, warnings);
+    extract_query_predicates(validator, root, warnings, PredicateScope::Validator);
 }
 
 fn extract_schema(
@@ -523,30 +523,46 @@ fn validator_kind(value: &str) -> Option<ValueKind> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PredicateScope<'a> {
+    Validator,
+    PartialIndex(&'a str),
+}
+
 fn extract_query_predicates(
     predicate: &Document,
     root: &mut NodeEvidence,
     warnings: &mut BTreeSet<String>,
+    scope: PredicateScope<'_>,
 ) {
     if let Ok(conjunctions) = predicate.get_array("$and") {
         for conjunction in conjunctions {
             if let Some(document) = conjunction.as_document() {
-                extract_query_predicates(document, root, warnings);
+                extract_query_predicates(document, root, warnings, scope);
             }
         }
     }
     for (path, value) in predicate {
         if path.starts_with('$') {
             if path != "$jsonSchema" && path != "$and" {
+                let context = match scope {
+                    PredicateScope::Validator => "validator".to_owned(),
+                    PredicateScope::PartialIndex(name) => format!("partial index '{name}'"),
+                };
                 warnings.insert(format!(
-                    "validator predicate '{path}' is preserved for fingerprinting but not inferred"
+                    "{context} predicate '{path}' is preserved for fingerprinting but not inferred"
                 ));
             }
             continue;
         }
-        let node = indexed_path_mut(root, path);
+        let node = match scope {
+            PredicateScope::Validator => indexed_path_mut(root, path),
+            PredicateScope::PartialIndex(_) => partial_predicate_path_mut(root, path),
+        };
         if let Some(document) = value.as_document() {
-            if matches!(document.get("$exists"), Some(Bson::Boolean(true))) {
+            if matches!(scope, PredicateScope::Validator)
+                && matches!(document.get("$exists"), Some(Bson::Boolean(true)))
+            {
                 node.required = true;
             }
             if let Some(kind) = document.get("$type") {
@@ -561,7 +577,9 @@ fn extract_query_predicates(
                 }
             }
         } else {
-            node.required = true;
+            if matches!(scope, PredicateScope::Validator) {
+                node.required = true;
+            }
             node.declared.insert(value_kind(value));
         }
     }
@@ -594,6 +612,14 @@ fn extract_index(index: &Document, evidence: &mut Evidence) {
             }
             record_index_key(path, &index_key_kind(kind), &name, &mut keys, evidence);
         }
+    }
+    if let Ok(predicate) = index.get_document("partialFilterExpression") {
+        extract_query_predicates(
+            predicate,
+            &mut evidence.root,
+            &mut evidence.warnings,
+            PredicateScope::PartialIndex(&name),
+        );
     }
     evidence.indexes.push(IndexEvidence {
         name,
@@ -635,6 +661,18 @@ fn indexed_path_mut<'a>(root: &'a mut NodeEvidence, path: &str) -> &'a mut NodeE
     let mut node = root;
     for segment in path.split('.') {
         node = node.fields.entry(segment.to_owned()).or_default();
+    }
+    node
+}
+
+fn partial_predicate_path_mut<'a>(root: &'a mut NodeEvidence, path: &str) -> &'a mut NodeEvidence {
+    let mut node = root;
+    let mut segments = path.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        node = node.fields.entry(segment.to_owned()).or_default();
+        if segments.peek().is_some() {
+            node.declared.insert(ValueKind::Object);
+        }
     }
     node
 }
@@ -1491,6 +1529,78 @@ mod tests {
             assert_eq!(key.path, path);
             assert_eq!(key.kind, index_key_kind(&kind));
         }
+    }
+
+    #[test]
+    fn partial_index_predicates_add_optional_type_and_container_evidence() {
+        let mut evidence = Evidence::default();
+        extract_index(
+            &doc! {
+                "name": "account_type_partial",
+                "key": {"account.id": 1},
+                "partialFilterExpression": {
+                    "$and": [
+                        {"account.id": {"$type": "string", "$exists": true}},
+                        {"state": {"$in": ["active", "pending"]}},
+                    ]
+                },
+            },
+            &mut evidence,
+        );
+
+        let account = &evidence.root.fields["account"];
+        assert!(account.declared.contains(&ValueKind::Object));
+        assert!(!account.required);
+        assert!(account.fields["id"].declared.contains(&ValueKind::String));
+        assert!(!account.fields["id"].required);
+        assert!(
+            evidence.root.fields["state"]
+                .declared
+                .contains(&ValueKind::String)
+        );
+        assert!(!evidence.root.fields["state"].required);
+
+        let mut warnings = evidence.warnings.clone();
+        let manifest = resolve_manifest("accounts", &evidence.root, &mut warnings).unwrap();
+        assert!(manifest.tables.iter().any(|table| {
+            table.table_name == "ACCOUNTS"
+                && table
+                    .columns
+                    .iter()
+                    .any(|column| column.name == "account|object" && !column.is_required)
+        }));
+        assert!(manifest.tables.iter().any(|table| {
+            table.table_name == "ACCOUNTS_account"
+                && table.columns.iter().any(|column| {
+                    column.name == "id"
+                        && column.bson_type == Some(BsonKind::String)
+                        && !column.is_required
+                })
+        }));
+    }
+
+    #[test]
+    fn disjunctive_partial_index_predicates_are_not_inferred() {
+        let mut evidence = Evidence::default();
+        extract_index(
+            &doc! {
+                "name": "unsafe_or_partial",
+                "key": {"sequence": 1},
+                "partialFilterExpression": {
+                    "$or": [
+                        {"unsafe": {"$type": "string"}},
+                        {"unsafe": {"$type": "int"}},
+                    ]
+                },
+            },
+            &mut evidence,
+        );
+
+        assert!(!evidence.root.fields.contains_key("unsafe"));
+        assert!(evidence.warnings.iter().any(|warning| {
+            warning.contains("partial index 'unsafe_or_partial'")
+                && warning.contains("predicate '$or'")
+        }));
     }
 
     #[test]

@@ -63,6 +63,33 @@ fn discovers_validator_indexes_samples_and_permission_gaps() {
                 .all(|key| key.path != "_fts" && key.path != "_ftsx")
         }));
         assert!(first.report.paths.iter().any(|path| {
+            path.path == ["account", "id"]
+                && path.declared == ["string"]
+                && !path.required
+                && path.indexed_by == ["account_type_partial"]
+        }));
+        assert!(first.report.paths.iter().any(|path| {
+            path.path == ["active"] && path.declared == ["boolean"] && !path.required
+        }));
+        assert!(
+            !first
+                .report
+                .paths
+                .iter()
+                .any(|path| path.path == ["unsafe"])
+        );
+        assert!(first.report.warnings.iter().any(|warning| {
+            warning.contains("partial index 'unsafe_or_partial'")
+                && warning.contains("predicate '$or'")
+        }));
+        assert!(first.manifest.tables.iter().any(|table| {
+            table.table_name == "PEOPLE_account"
+                && table
+                    .columns
+                    .iter()
+                    .any(|column| column.name == "id" && !column.is_required)
+        }));
+        assert!(first.report.paths.iter().any(|path| {
             path.path == ["age"]
                 && path.declared == ["null", "int32", "int64"]
                 && path.observed.contains(&"string".into())
@@ -74,7 +101,12 @@ fn discovers_validator_indexes_samples_and_permission_gaps() {
                 .iter()
                 .map(|table| table.table_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["PEOPLE", "PEOPLE_items_arr", "PEOPLE_profile"]
+            vec![
+                "PEOPLE",
+                "PEOPLE_account",
+                "PEOPLE_items_arr",
+                "PEOPLE_profile",
+            ]
         );
 
         let limited = infer(&connection(limited_uri), "inference", "people", &config)

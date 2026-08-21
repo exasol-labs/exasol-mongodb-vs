@@ -53,6 +53,8 @@ docker exec "$container" mongosh --quiet \
     });
     db.people.createIndex({email: 1}, {name: "email_unique", unique: true, sparse: true});
     db.people.createIndex({"profile.city": 1, age: -1}, {name: "profile_age_partial", partialFilterExpression: {active: true}});
+    db.people.createIndex({"account.id": 1}, {name: "account_type_partial", partialFilterExpression: {"account.id": {$type: "string"}}});
+    db.people.createIndex({age: 1}, {name: "unsafe_or_partial", partialFilterExpression: {$or: [{unsafe: {$type: "string"}}, {unsafe: {$type: "int"}}]}});
     db.people.createIndex({name: "text"}, {name: "name_text"});
     db.people.insertMany([
       {name: "Ada", age: NumberLong(42), profile: {city: "Copenhagen"}, items: [{label: "one"}]},
