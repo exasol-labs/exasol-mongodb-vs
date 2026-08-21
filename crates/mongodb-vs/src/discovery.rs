@@ -756,7 +756,16 @@ fn build_table(
         columns.push(manifest_column("_pos", "DECIMAL(18,0)", None, None, true));
     }
 
-    if table_kind == PathKind::Array && !node_has_kind(node, ValueKind::Object) {
+    if table_kind == PathKind::Array {
+        if node_has_kind(node, ValueKind::Object) && all_kinds(node).len() > 1 {
+            columns.push(manifest_column(
+                "_value|object",
+                "BOOLEAN",
+                None,
+                None,
+                false,
+            ));
+        }
         if node_has_kind(node, ValueKind::Array) {
             columns.push(manifest_column(
                 "_value|array",
@@ -767,7 +776,8 @@ fn build_table(
             ));
         }
         add_scalar_columns("_value", None, node, true, &mut columns, warnings);
-    } else {
+    }
+    if table_kind == PathKind::Object || node_has_kind(node, ValueKind::Object) {
         let physical_names = physical_field_names(&node.fields);
         for (source_name, child) in &node.fields {
             let base = &physical_names[source_name];
@@ -818,12 +828,7 @@ fn build_table(
         columns,
     });
 
-    let child_source = if table_kind == PathKind::Array {
-        node.items.as_deref().unwrap_or(node)
-    } else {
-        node
-    };
-    for (name, child) in &child_source.fields {
+    for (name, child) in &node.fields {
         for kind in [PathKind::Object, PathKind::Array] {
             let value_kind = match kind {
                 PathKind::Object => ValueKind::Object,
@@ -1501,6 +1506,67 @@ mod tests {
         assert!(models.iter().any(|table| {
             table.table_name == "EDGE_arr_arr_value_arr"
                 && table.path.last().is_some_and(|segment| segment.direct)
+        }));
+    }
+
+    #[test]
+    fn object_scalar_and_nested_array_elements_share_one_complete_row_union() {
+        let mut root = NodeEvidence::default();
+        let mut warnings = BTreeSet::new();
+        let config = InferenceConfig::default();
+        observe_document(
+            &doc! {
+                "poly": [
+                    {"x": 1, "child": {"y": 2}, "inside": [3]},
+                    [4, 5],
+                    "tail",
+                    true,
+                    Bson::Null,
+                ]
+            },
+            &mut root,
+            0,
+            &config,
+            &mut warnings,
+        );
+
+        let manifest = resolve_manifest("mixed", &root, &mut warnings).unwrap();
+        let models = manifest.models().unwrap();
+        let outer = models
+            .iter()
+            .find(|table| table.table_name == "MIXED_poly_arr")
+            .unwrap();
+        for expected in [
+            "_value",
+            "_value|boolean",
+            "_value|n",
+            "_value|object",
+            "_value|array",
+            "x",
+            "child|object",
+            "inside|array",
+        ] {
+            assert!(
+                outer
+                    .columns
+                    .iter()
+                    .any(|column| column.exasol_name == expected),
+                "missing mixed array branch {expected}"
+            );
+        }
+        for expected in [
+            "MIXED_poly_arr_child",
+            "MIXED_poly_arr_inside_arr",
+            "MIXED_poly_arr_value_arr",
+        ] {
+            assert!(
+                models.iter().any(|table| table.table_name == expected),
+                "missing mixed array child table {expected}"
+            );
+        }
+        assert!(manifest.relationships.iter().any(|relationship| {
+            relationship.parent_table == "MIXED_poly_arr"
+                && relationship.child_table == "MIXED_poly_arr_child"
         }));
     }
 

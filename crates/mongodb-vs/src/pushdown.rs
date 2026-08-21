@@ -711,7 +711,10 @@ fn mongo_dotted_path(table_path: &[PathSegment], spec: &ColumnSpec) -> Option<St
             }
             segments.push(name);
         }
-        ColumnSource::Value | ColumnSource::ValueNullMask | ColumnSource::ValueEmptyStringMask => {}
+        ColumnSource::Value
+        | ColumnSource::ValueNullMask
+        | ColumnSource::ValueEmptyStringMask
+        | ColumnSource::ValueObjectMarker => {}
         _ => return None,
     }
     (!segments.is_empty()).then(|| segments.join("."))
@@ -1444,7 +1447,9 @@ fn branch_source(source: &ColumnSource) -> Option<(bool, &str)> {
         ColumnSource::Field { name }
         | ColumnSource::ObjectLink { name }
         | ColumnSource::ArrayLength { name } => Some((false, name)),
-        ColumnSource::Value | ColumnSource::ValueArrayLength => Some((true, "")),
+        ColumnSource::Value | ColumnSource::ValueObjectMarker | ColumnSource::ValueArrayLength => {
+            Some((true, ""))
+        }
         _ => None,
     }
 }
@@ -1987,6 +1992,12 @@ mod tests {
                 bson_kind: Some(BsonKind::String),
             },
             ColumnSpec {
+                source: ColumnSource::ValueObjectMarker,
+                exasol_name: "_value|object".into(),
+                sql_type: SqlType::Boolean,
+                bson_kind: None,
+            },
+            ColumnSpec {
                 source: ColumnSource::ValueArrayLength,
                 exasol_name: "_value|array".into(),
                 sql_type: SqlType::Decimal {
@@ -2005,7 +2016,10 @@ mod tests {
 
         let query = plan(&request, &columns).unwrap();
         assert_eq!(query.selected, ["_value|string"]);
-        assert_eq!(query.required, ["_value|string", "_value", "_value|array"]);
+        assert_eq!(
+            query.required,
+            ["_value|string", "_value", "_value|object", "_value|array"]
+        );
     }
 
     #[test]

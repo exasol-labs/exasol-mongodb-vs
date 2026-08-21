@@ -132,6 +132,7 @@ pub enum ColumnSource {
     ValueNullMask,
     EmptyStringMask { name: String },
     ValueEmptyStringMask,
+    ValueObjectMarker,
     ObjectLink { name: String },
     ArrayLength { name: String },
     ValueArrayLength,
@@ -394,6 +395,7 @@ fn derive_source(column: &ManifestColumn) -> (ColumnSource, Option<BsonKind>) {
         "_value" => return (ColumnSource::Value, None),
         "_value|n" => return (ColumnSource::ValueNullMask, None),
         "_value|empty" => return (ColumnSource::ValueEmptyStringMask, None),
+        "_value|object" => return (ColumnSource::ValueObjectMarker, None),
         "_value|array" => return (ColumnSource::ValueArrayLength, None),
         _ => {}
     }
@@ -481,6 +483,7 @@ fn default_bson_kind(source: &ColumnSource, sql_type: &SqlType) -> Option<BsonKi
         | ColumnSource::ValueNullMask
         | ColumnSource::EmptyStringMask { .. }
         | ColumnSource::ValueEmptyStringMask
+        | ColumnSource::ValueObjectMarker
         | ColumnSource::ObjectLink { .. }
         | ColumnSource::ArrayLength { .. }
         | ColumnSource::ValueArrayLength => None,
@@ -521,7 +524,8 @@ fn validate_column_pair(
         ColumnSource::NullMask { .. }
         | ColumnSource::ValueNullMask
         | ColumnSource::EmptyStringMask { .. }
-        | ColumnSource::ValueEmptyStringMask => {
+        | ColumnSource::ValueEmptyStringMask
+        | ColumnSource::ValueObjectMarker => {
             matches!(sql_type, SqlType::Boolean)
         }
         ColumnSource::Field { .. } | ColumnSource::Value => match bson_kind {
@@ -762,6 +766,7 @@ mod tests {
             bson_type: None,
         };
         let cases = [
+            ("_value|object", "BOOLEAN", ColumnSource::ValueObjectMarker),
             (
                 "_value|empty",
                 "BOOLEAN",

@@ -27,6 +27,7 @@ Structural columns connect these rows:
 | `_parent` | Stable identity of the parent row for an array element. |
 | `_pos` | Zero-based array position. Preserves ordering and duplicates. |
 | `_value` | Scalar array-element value. |
+| `_value\\|object` | `TRUE` for an object element when an array also contains other BSON kinds. |
 | `_value\|array` | Nested-array length and branch marker on a polymorphic array-element row. |
 | `<field>\|object` | Link from a row to an embedded-object child table. |
 | `<field>\|array` | Array length and structural marker for an array child table. |
@@ -45,9 +46,11 @@ These states are different in MongoDB and remain distinguishable:
 - an ordinary value appears in exactly one scalar branch.
 
 Scalar arrays use `_value|n` and `_value|empty` for the same purposes.
-When scalar and nested-array elements coexist, `_value|array` contains the
-nested array's length while every scalar branch is `NULL`; the direct child
-array table contains its ordered elements.
+When objects, scalars, and nested arrays coexist, their branches remain in one
+array table. `_value|object` identifies object rows, object fields are projected
+on those rows, and `_value|array` contains the nested array's length. Every
+scalar branch is `NULL` on both structural row kinds. The corresponding child
+tables contain embedded objects and ordered nested-array elements.
 
 The empty-string mask is necessary because Exasol represents an empty string as
 SQL `NULL`. Query the mask when the distinction matters.

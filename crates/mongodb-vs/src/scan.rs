@@ -162,6 +162,7 @@ fn validate_advertised_branches(current: &Bson, columns: &[ColumnSpec]) -> Resul
             | ColumnSource::ObjectLink { name }
             | ColumnSource::ArrayLength { name } => Some((false, name.as_str())),
             ColumnSource::Value => Some((true, "")),
+            ColumnSource::ValueObjectMarker => Some((true, "")),
             ColumnSource::ValueArrayLength => Some((true, "")),
             _ => None,
         };
@@ -184,6 +185,7 @@ fn validate_advertised_branches(current: &Bson, columns: &[ColumnSpec]) -> Resul
             .iter()
             .filter(|candidate| match (&candidate.source, key.0) {
                 (ColumnSource::Value, true) => true,
+                (ColumnSource::ValueObjectMarker, true) => true,
                 (ColumnSource::ValueArrayLength, true) => true,
                 (
                     ColumnSource::Field { name }
@@ -194,7 +196,9 @@ fn validate_advertised_branches(current: &Bson, columns: &[ColumnSpec]) -> Resul
                 _ => false,
             })
             .any(|candidate| match candidate.source {
-                ColumnSource::ObjectLink { .. } => matches!(value, Bson::Document(_)),
+                ColumnSource::ObjectLink { .. } | ColumnSource::ValueObjectMarker => {
+                    matches!(value, Bson::Document(_))
+                }
                 ColumnSource::ArrayLength { .. } | ColumnSource::ValueArrayLength => {
                     matches!(value, Bson::Array(_))
                 }
@@ -280,6 +284,7 @@ fn column_value(
             current,
             Bson::String(value) if value.is_empty()
         ))),
+        ColumnSource::ValueObjectMarker => Ok(Value::Bool(matches!(current, Bson::Document(_)))),
         ColumnSource::ObjectLink { name } => {
             let value = current
                 .as_document()
@@ -910,6 +915,92 @@ mod tests {
             )
             .unwrap(),
             Value::Null
+        );
+        assert!(validate_advertised_branches(&Bson::Boolean(true), &columns).is_err());
+    }
+
+    #[test]
+    fn mixed_array_rows_route_objects_scalars_arrays_and_nulls() {
+        let columns = vec![
+            scalar(
+                "_value",
+                ColumnSource::Value,
+                BsonKind::String,
+                SqlType::Varchar { size: 100 },
+            ),
+            ColumnSpec {
+                source: ColumnSource::ValueObjectMarker,
+                exasol_name: "_value|object".into(),
+                sql_type: SqlType::Boolean,
+                bson_kind: None,
+            },
+            ColumnSpec {
+                source: ColumnSource::ValueArrayLength,
+                exasol_name: "_value|array".into(),
+                sql_type: SqlType::Decimal {
+                    precision: 18,
+                    scale: 0,
+                },
+                bson_kind: None,
+            },
+            ColumnSpec {
+                source: ColumnSource::ValueNullMask,
+                exasol_name: "_value|n".into(),
+                sql_type: SqlType::Boolean,
+                bson_kind: None,
+            },
+            scalar(
+                "x",
+                ColumnSource::Field { name: "x".into() },
+                BsonKind::Int32,
+                SqlType::Decimal {
+                    precision: 10,
+                    scale: 0,
+                },
+            ),
+        ];
+        let plan = MongoReadPlan::RootFind;
+        let root_id = Bson::Int32(1);
+
+        let object = Bson::Document(mongodb::bson::doc! {"x": 7});
+        validate_advertised_branches(&object, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[1], &plan, &root_id, &object, &[]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            column_value(&columns[4], &plan, &root_id, &object, &[]).unwrap(),
+            Value::Numeric(Decimal {
+                unscaled: 7,
+                scale: 0,
+            })
+        );
+
+        let string = Bson::String("tail".into());
+        validate_advertised_branches(&string, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[0], &plan, &root_id, &string, &[]).unwrap(),
+            Value::String("tail".into())
+        );
+        assert_eq!(
+            column_value(&columns[1], &plan, &root_id, &string, &[]).unwrap(),
+            Value::Bool(false)
+        );
+
+        let array = Bson::Array(vec![Bson::Int32(1), Bson::Int32(2)]);
+        validate_advertised_branches(&array, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[2], &plan, &root_id, &array, &[]).unwrap(),
+            Value::Numeric(Decimal {
+                unscaled: 2,
+                scale: 0,
+            })
+        );
+
+        validate_advertised_branches(&Bson::Null, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[3], &plan, &root_id, &Bson::Null, &[]).unwrap(),
+            Value::Bool(true)
         );
         assert!(validate_advertised_branches(&Bson::Boolean(true), &columns).is_err());
     }
