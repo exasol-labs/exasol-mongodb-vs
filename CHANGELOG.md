@@ -25,3 +25,5 @@ All notable changes to this project are documented here. The format follows
   bounded Exasol identifiers.
 - Double-typed predicates now receive exact, BSON-type-guarded MongoDB pushdown
   instead of transferring the full collection for Exasol-side filtering.
+- Every advertised predicate capability is covered by a source-delegation
+  contract test, and direct `>` / `>=` predicates are now advertised and pushed.

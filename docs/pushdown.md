@@ -76,6 +76,11 @@ could create false negatives. Literal MongoDB field names containing `.` or
 starting with `$`, plus direct nested-array levels, continue to use `$getField`
 instead of ambiguous dotted syntax.
 
+Every advertised `FN_PRED_*` operation is exercised by a capability-contract
+test that requires an exact MongoDB `$match`. This is distinct from the optional
+early, index-oriented match: `NOT`, `IS NULL`, and `<>` are delegated in the
+post-traversal match even when no safe native prefilter can be constructed.
+
 String equality and constant `IN` receive a dotted-path prefilter as well. The
 connector emits native `$eq` and `$in` values, producing equality seeks on
 compatible nested-field and multikey indexes rather than prefix range scans.

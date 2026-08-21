@@ -28,6 +28,8 @@ pub const CAPABILITIES: &[&str] = &[
     "FN_PRED_NOTEQUAL",
     "FN_PRED_LESS",
     "FN_PRED_LESSEQUAL",
+    "FN_PRED_GREATER",
+    "FN_PRED_GREATEREQUAL",
     "FN_PRED_IN_CONSTLIST",
     "FN_PRED_IS_NULL",
     "FN_PRED_IS_NOT_NULL",
@@ -799,7 +801,12 @@ fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
             ),
         }),
         Some(
-            "predicate_equal" | "predicate_notequal" | "predicate_less" | "predicate_lessequal",
+            "predicate_equal"
+            | "predicate_notequal"
+            | "predicate_less"
+            | "predicate_lessequal"
+            | "predicate_greater"
+            | "predicate_greaterequal",
         ) => parse_comparison(node),
         Some("predicate_between") => parse_between(node),
         Some("predicate_in_constlist") => {
@@ -886,12 +893,16 @@ fn parse_comparison(node: &Json) -> Result<FilterExpr, UdfError> {
         Some("predicate_notequal") => CompareOp::NotEqual,
         Some("predicate_less") => CompareOp::Less,
         Some("predicate_lessequal") => CompareOp::LessEqual,
+        Some("predicate_greater") => CompareOp::Greater,
+        Some("predicate_greaterequal") => CompareOp::GreaterEqual,
         _ => unreachable!(),
     };
     if !column_left {
         op = match op {
             CompareOp::Less => CompareOp::Greater,
             CompareOp::LessEqual => CompareOp::GreaterEqual,
+            CompareOp::Greater => CompareOp::Less,
+            CompareOp::GreaterEqual => CompareOp::LessEqual,
             other => other,
         };
     }
@@ -1504,6 +1515,7 @@ mod property_tests;
 mod tests {
     use super::*;
     use crate::model::SqlType;
+    use crate::mongo_plan::MongoReadPlan;
 
     fn assert_finite_double_path_predicate(
         predicate: &Document,
@@ -1831,6 +1843,135 @@ mod tests {
         let outer = render_outer_sql("SELECT scan", &query, &columns()).unwrap();
         assert!(outer.contains("(\"age\" >= 18)"));
         assert!(outer.contains("(\"age\" <= 65)"));
+    }
+
+    #[test]
+    fn every_advertised_predicate_capability_produces_an_exact_source_match() {
+        let column = || serde_json::json!({"type":"column", "name":"age"});
+        let literal = |value| serde_json::json!({"type":"literal_exactnumeric", "value":value});
+        let comparison = |kind: &str, value| {
+            serde_json::json!({
+                "type": kind,
+                "left": column(),
+                "right": literal(value)
+            })
+        };
+        let cases = vec![
+            (
+                "FN_PRED_AND",
+                serde_json::json!({
+                    "type":"predicate_and",
+                    "expressions":[comparison("predicate_greater", 1), comparison("predicate_less", 9)]
+                }),
+                true,
+            ),
+            (
+                "FN_PRED_OR",
+                serde_json::json!({
+                    "type":"predicate_or",
+                    "expressions":[comparison("predicate_equal", 1), comparison("predicate_equal", 9)]
+                }),
+                true,
+            ),
+            (
+                "FN_PRED_NOT",
+                serde_json::json!({
+                    "type":"predicate_not",
+                    "expression":comparison("predicate_equal", 1)
+                }),
+                false,
+            ),
+            (
+                "FN_PRED_BETWEEN",
+                serde_json::json!({
+                    "type":"predicate_between",
+                    "expression":column(),
+                    "left":literal(1),
+                    "right":literal(9)
+                }),
+                true,
+            ),
+            ("FN_PRED_EQUAL", comparison("predicate_equal", 3), true),
+            (
+                "FN_PRED_NOTEQUAL",
+                comparison("predicate_notequal", 3),
+                false,
+            ),
+            ("FN_PRED_LESS", comparison("predicate_less", 3), true),
+            (
+                "FN_PRED_LESSEQUAL",
+                comparison("predicate_lessequal", 3),
+                true,
+            ),
+            ("FN_PRED_GREATER", comparison("predicate_greater", 3), true),
+            (
+                "FN_PRED_GREATEREQUAL",
+                comparison("predicate_greaterequal", 3),
+                true,
+            ),
+            (
+                "FN_PRED_IN_CONSTLIST",
+                serde_json::json!({
+                    "type":"predicate_in_constlist",
+                    "expression":column(),
+                    "arguments":[literal(1), literal(9)]
+                }),
+                true,
+            ),
+            (
+                "FN_PRED_IS_NULL",
+                serde_json::json!({"type":"predicate_is_null", "expression":column()}),
+                false,
+            ),
+            (
+                "FN_PRED_IS_NOT_NULL",
+                serde_json::json!({"type":"predicate_is_not_null", "expression":column()}),
+                true,
+            ),
+        ];
+
+        let advertised = CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|capability| capability.starts_with("FN_PRED_"))
+            .collect::<HashSet<_>>();
+        let covered = cases
+            .iter()
+            .map(|(capability, _, _)| *capability)
+            .collect::<HashSet<_>>();
+        assert_eq!(covered, advertised, "predicate capability matrix drifted");
+
+        for (capability, filter, expects_native_prefilter) in cases {
+            let request = serde_json::json!({"pushdownRequest": {
+                "type":"select",
+                "selectList":[column()],
+                "filter":filter
+            }});
+            let query = plan(&request, &columns()).unwrap_or_else(|error| {
+                panic!("{capability} was advertised but not planned: {error}")
+            });
+            assert!(
+                query.mongo.filter.is_some(),
+                "{capability} did not produce an exact MongoDB filter"
+            );
+            assert_eq!(
+                query.mongo.prefilter.is_some(),
+                expects_native_prefilter,
+                "{capability} native-prefilter classification changed"
+            );
+
+            let pipeline = MongoReadPlan::RootFind
+                .pipeline_with(&query.mongo, &columns())
+                .expect("an exact filter requires an aggregation pipeline");
+            assert!(
+                pipeline.iter().any(|stage| {
+                    stage
+                        .get_document("$match")
+                        .is_ok_and(|predicate| predicate.contains_key("$expr"))
+                }),
+                "{capability} did not reach MongoDB as an exact $match: {pipeline:?}"
+            );
+        }
     }
 
     #[test]
