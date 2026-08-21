@@ -145,7 +145,7 @@ fn emit_row(
     current: &Bson,
     ordinals: &[u64],
 ) -> Result<(), UdfError> {
-    validate_scalar_branches(current, &spec.columns)?;
+    validate_advertised_branches(current, &spec.columns)?;
     let row = spec
         .columns
         .iter()
@@ -154,11 +154,13 @@ fn emit_row(
     ctx.emit(&row)
 }
 
-fn validate_scalar_branches(current: &Bson, columns: &[ColumnSpec]) -> Result<(), UdfError> {
+fn validate_advertised_branches(current: &Bson, columns: &[ColumnSpec]) -> Result<(), UdfError> {
     let mut checked = HashSet::new();
     for column in columns {
         let key = match &column.source {
-            ColumnSource::Field { name } => Some((false, name.as_str())),
+            ColumnSource::Field { name }
+            | ColumnSource::ObjectLink { name }
+            | ColumnSource::ArrayLength { name } => Some((false, name.as_str())),
             ColumnSource::Value => Some((true, "")),
             ColumnSource::ValueArrayLength => Some((true, "")),
             _ => None,
@@ -183,15 +185,22 @@ fn validate_scalar_branches(current: &Bson, columns: &[ColumnSpec]) -> Result<()
             .filter(|candidate| match (&candidate.source, key.0) {
                 (ColumnSource::Value, true) => true,
                 (ColumnSource::ValueArrayLength, true) => true,
-                (ColumnSource::Field { name }, false) => name == key.1,
+                (
+                    ColumnSource::Field { name }
+                    | ColumnSource::ObjectLink { name }
+                    | ColumnSource::ArrayLength { name },
+                    false,
+                ) => name == key.1,
                 _ => false,
             })
-            .any(|candidate| {
-                matches!(candidate.source, ColumnSource::ValueArrayLength)
-                    && matches!(value, Bson::Array(_))
-                    || candidate
-                        .bson_kind
-                        .is_some_and(|kind| kind_accepts(kind, value))
+            .any(|candidate| match candidate.source {
+                ColumnSource::ObjectLink { .. } => matches!(value, Bson::Document(_)),
+                ColumnSource::ArrayLength { .. } | ColumnSource::ValueArrayLength => {
+                    matches!(value, Bson::Array(_))
+                }
+                _ => candidate
+                    .bson_kind
+                    .is_some_and(|kind| kind_accepts(kind, value)),
             });
         if !accepted {
             let field = if key.0 { "array value" } else { key.1 };
@@ -292,7 +301,7 @@ fn column_value(
                         &column.exasol_name,
                     )
                 }
-                Some(other) => Err(structural_drift(name, "object", other)),
+                Some(_) => Ok(Value::Null),
             }
         }
         ColumnSource::ArrayLength { name } => {
@@ -304,7 +313,7 @@ fn column_value(
                 Some(Bson::Array(values)) => {
                     integer_value(values.len() as i128, &column.sql_type, &column.exasol_name)
                 }
-                Some(other) => Err(structural_drift(name, "array", other)),
+                Some(_) => Ok(Value::Null),
             }
         }
     }
@@ -552,13 +561,6 @@ fn bson_tag(value: &Bson) -> &'static str {
     }
 }
 
-fn structural_drift(field: &str, expected: &str, actual: &Bson) -> UdfError {
-    UdfError::User(format!(
-        "MongoDB field '{field}' is {}, expected {expected}; refresh or change MANIFEST",
-        bson_tag(actual)
-    ))
-}
-
 fn mongo_error(operation: &str) -> UdfError {
     // Driver errors can include the URI or server reply. Keep observable errors
     // generic until Milestone 4 introduces structured redaction.
@@ -746,7 +748,7 @@ mod tests {
             ),
         ];
         let current = Bson::Document(mongodb::bson::doc! {"v": "hello"});
-        validate_scalar_branches(&current, &columns).unwrap();
+        validate_advertised_branches(&current, &columns).unwrap();
         assert_eq!(
             scalar_value(current.as_document().unwrap().get("v"), &columns[0]).unwrap(),
             Value::Null
@@ -756,7 +758,56 @@ mod tests {
             Value::String("hello".into())
         );
         let drift = Bson::Document(mongodb::bson::doc! {"v": true});
-        assert!(validate_scalar_branches(&drift, &columns).is_err());
+        assert!(validate_advertised_branches(&drift, &columns).is_err());
+    }
+
+    #[test]
+    fn object_and_scalar_field_variants_are_exclusive_and_queryable() {
+        let columns = vec![
+            scalar(
+                "payload",
+                ColumnSource::Field {
+                    name: "payload".into(),
+                },
+                BsonKind::String,
+                SqlType::Varchar { size: 20 },
+            ),
+            ColumnSpec {
+                source: ColumnSource::ObjectLink {
+                    name: "payload".into(),
+                },
+                exasol_name: "payload|object".into(),
+                sql_type: SqlType::Varchar { size: 64 },
+                bson_kind: None,
+            },
+        ];
+        let plan = MongoReadPlan::RootFind;
+        let root_id = Bson::Int32(1);
+
+        let object = Bson::Document(mongodb::bson::doc! {"payload": {"email": "x@y"}});
+        validate_advertised_branches(&object, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[0], &plan, &root_id, &object, &[]).unwrap(),
+            Value::Null
+        );
+        assert!(matches!(
+            column_value(&columns[1], &plan, &root_id, &object, &[]).unwrap(),
+            Value::String(_)
+        ));
+
+        let string = Bson::Document(mongodb::bson::doc! {"payload": "legacy"});
+        validate_advertised_branches(&string, &columns).unwrap();
+        assert_eq!(
+            column_value(&columns[0], &plan, &root_id, &string, &[]).unwrap(),
+            Value::String("legacy".into())
+        );
+        assert_eq!(
+            column_value(&columns[1], &plan, &root_id, &string, &[]).unwrap(),
+            Value::Null
+        );
+
+        let drift = Bson::Document(mongodb::bson::doc! {"payload": true});
+        assert!(validate_advertised_branches(&drift, &columns).is_err());
     }
 
     #[test]
@@ -780,7 +831,7 @@ mod tests {
         ];
 
         let string = Bson::String("hello".into());
-        validate_scalar_branches(&string, &columns).unwrap();
+        validate_advertised_branches(&string, &columns).unwrap();
         assert_eq!(
             scalar_value(Some(&string), &columns[0]).unwrap(),
             Value::Null
@@ -791,7 +842,7 @@ mod tests {
         );
 
         let integer = Bson::Int32(7);
-        validate_scalar_branches(&integer, &columns).unwrap();
+        validate_advertised_branches(&integer, &columns).unwrap();
         assert_eq!(
             scalar_value(Some(&integer), &columns[0]).unwrap(),
             Value::Numeric(Decimal {
@@ -834,7 +885,7 @@ mod tests {
             },
         ];
         let array = Bson::Array(vec![Bson::Int32(1), Bson::Int32(2)]);
-        validate_scalar_branches(&array, &columns).unwrap();
+        validate_advertised_branches(&array, &columns).unwrap();
         assert_eq!(
             column_value(
                 &columns[2],
@@ -860,7 +911,7 @@ mod tests {
             .unwrap(),
             Value::Null
         );
-        assert!(validate_scalar_branches(&Bson::Boolean(true), &columns).is_err());
+        assert!(validate_advertised_branches(&Bson::Boolean(true), &columns).is_err());
     }
 
     #[test]
@@ -947,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_structural_columns_and_detects_structural_drift() {
+    fn converts_structural_columns_and_validates_structural_drift() {
         let root = Bson::String("root".into());
         let plan = MongoReadPlan::Nested {
             path: vec![PathSegment {
@@ -1054,40 +1105,32 @@ mod tests {
                 scale: 0
             })
         );
-        assert!(
-            column_value(
-                &value(
-                    ColumnSource::ObjectLink {
-                        name: "bad_object".into()
-                    },
-                    "bad",
-                    SqlType::Varchar { size: 64 }
-                ),
-                &plan,
-                &root,
-                &current,
-                &[3]
-            )
-            .is_err()
+        let bad_object = value(
+            ColumnSource::ObjectLink {
+                name: "bad_object".into(),
+            },
+            "bad_object|object",
+            SqlType::Varchar { size: 64 },
         );
-        assert!(
-            column_value(
-                &value(
-                    ColumnSource::ArrayLength {
-                        name: "bad_array".into()
-                    },
-                    "bad",
-                    SqlType::Decimal {
-                        precision: 18,
-                        scale: 0
-                    }
-                ),
-                &plan,
-                &root,
-                &current,
-                &[3]
-            )
-            .is_err()
+        let bad_array = value(
+            ColumnSource::ArrayLength {
+                name: "bad_array".into(),
+            },
+            "bad_array|array",
+            SqlType::Decimal {
+                precision: 18,
+                scale: 0,
+            },
+        );
+        assert!(validate_advertised_branches(&current, std::slice::from_ref(&bad_object)).is_err());
+        assert!(validate_advertised_branches(&current, std::slice::from_ref(&bad_array)).is_err());
+        assert_eq!(
+            column_value(&bad_object, &plan, &root, &current, &[3]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            column_value(&bad_array, &plan, &root, &current, &[3]).unwrap(),
+            Value::Null
         );
     }
 

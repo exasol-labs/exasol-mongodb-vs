@@ -226,7 +226,7 @@ pub fn plan(request: &Json, columns: &[ColumnSpec]) -> Result<QueryPlan, UdfErro
         required.extend(referenced_columns(filter));
     }
     required.extend(order_by.iter().map(|key| key.column.clone()));
-    expand_scalar_siblings(&mut required, columns, &known);
+    expand_branch_siblings(&mut required, columns, &known);
 
     let exact_filter = filter
         .as_ref()
@@ -330,7 +330,7 @@ fn plan_single_group(
     if required.is_empty() {
         required.push(count_carrier(columns).exasol_name.clone());
     }
-    expand_scalar_siblings(&mut required, columns, known);
+    expand_branch_siblings(&mut required, columns, known);
 
     let exact_filter = filter
         .as_ref()
@@ -415,21 +415,21 @@ fn count_carrier(columns: &[ColumnSpec]) -> &ColumnSpec {
         .unwrap_or(&columns[0])
 }
 
-fn expand_scalar_siblings(
+fn expand_branch_siblings(
     required: &mut Vec<String>,
     columns: &[ColumnSpec],
     known: &HashMap<&str, &ColumnSpec>,
 ) {
-    let scalar_sources = required
+    let branch_sources = required
         .iter()
         .filter_map(|name| known.get(name.as_str()))
-        .filter_map(|column| scalar_source(&column.source))
+        .filter_map(|column| branch_source(&column.source))
         .collect::<Vec<_>>();
     required.extend(
         columns
             .iter()
             .filter(|column| {
-                scalar_source(&column.source).is_some_and(|source| scalar_sources.contains(&source))
+                branch_source(&column.source).is_some_and(|source| branch_sources.contains(&source))
             })
             .map(|column| column.exasol_name.clone()),
     );
@@ -1439,9 +1439,11 @@ fn involved_columns(request: &Json) -> Option<Vec<String>> {
     (!columns.is_empty()).then_some(columns)
 }
 
-fn scalar_source(source: &ColumnSource) -> Option<(bool, &str)> {
+fn branch_source(source: &ColumnSource) -> Option<(bool, &str)> {
     match source {
-        ColumnSource::Field { name } => Some((false, name)),
+        ColumnSource::Field { name }
+        | ColumnSource::ObjectLink { name }
+        | ColumnSource::ArrayLength { name } => Some((false, name)),
         ColumnSource::Value | ColumnSource::ValueArrayLength => Some((true, "")),
         _ => None,
     }
@@ -2004,6 +2006,43 @@ mod tests {
         let query = plan(&request, &columns).unwrap();
         assert_eq!(query.selected, ["_value|string"]);
         assert_eq!(query.required, ["_value|string", "_value", "_value|array"]);
+    }
+
+    #[test]
+    fn selecting_scalar_or_object_variant_keeps_both_branches_for_validation() {
+        let columns = vec![
+            ColumnSpec {
+                source: ColumnSource::Field {
+                    name: "payload".into(),
+                },
+                exasol_name: "payload".into(),
+                sql_type: SqlType::Varchar { size: 20 },
+                bson_kind: Some(BsonKind::String),
+            },
+            ColumnSpec {
+                source: ColumnSource::ObjectLink {
+                    name: "payload".into(),
+                },
+                exasol_name: "payload|object".into(),
+                sql_type: SqlType::Varchar { size: 64 },
+                bson_kind: None,
+            },
+        ];
+
+        for (selected, expected) in [
+            ("payload", vec!["payload", "payload|object"]),
+            ("payload|object", vec!["payload|object", "payload"]),
+        ] {
+            let request = serde_json::json!({
+                "pushdownRequest": {
+                    "type": "select",
+                    "selectList": [{"type": "column", "name": selected}]
+                }
+            });
+            let query = plan(&request, &columns).unwrap();
+            assert_eq!(query.selected, [selected]);
+            assert_eq!(query.required, expected);
+        }
     }
 
     #[test]
