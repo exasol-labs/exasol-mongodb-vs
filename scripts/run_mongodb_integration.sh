@@ -58,6 +58,15 @@ docker exec "$container" mongosh --quiet \
       {name: "Grace", age: "unknown", profile: {}, items: []},
       {name: "Linus", age: null}
     ]);
+    db.createCollection("deterministic_samples");
+    const deterministicSamples = [];
+    for (let id = 0; id < 30; id++) {
+      deterministicSamples.push({
+        _id: id,
+        branch: id % 3 === 0 ? id : (id % 3 === 1 ? `value-${id}` : {nested: id})
+      });
+    }
+    db.deterministic_samples.insertMany(deterministicSamples);
     db.createRole({
       role: "sampleOnly",
       privileges: [{resource: {db: "inference", collection: "people"}, actions: ["find"]}],

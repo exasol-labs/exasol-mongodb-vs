@@ -1,4 +1,5 @@
 use exasol_udf_sdk::connect_back::ConnectionObject;
+use mongodb::{Client, bson::doc};
 use mongodb_vs::discovery::{EvidenceStatus, InferenceConfig, infer};
 
 fn connection(uri: String) -> ConnectionObject {
@@ -29,9 +30,14 @@ fn discovers_validator_indexes_samples_and_permission_gaps() {
         )
         .await
         .unwrap();
-        let second = infer(&connection(root_uri), "inference", "people", &config)
-            .await
-            .unwrap();
+        let second = infer(
+            &connection(root_uri.clone()),
+            "inference",
+            "people",
+            &config,
+        )
+        .await
+        .unwrap();
         assert_eq!(first.manifest, second.manifest);
         assert_eq!(first.fingerprint, second.fingerprint);
         assert_eq!(first.report, second.report);
@@ -80,5 +86,49 @@ fn discovers_validator_indexes_samples_and_permission_gaps() {
                 .iter()
                 .any(|table| table.table_name == "PEOPLE")
         );
+
+        let deterministic_config = InferenceConfig {
+            sample_size: 5,
+            ..InferenceConfig::default()
+        };
+        let expected = infer(
+            &connection(root_uri.clone()),
+            "inference",
+            "deterministic_samples",
+            &deterministic_config,
+        )
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            let actual = infer(
+                &connection(root_uri.clone()),
+                "inference",
+                "deterministic_samples",
+                &deterministic_config,
+            )
+            .await
+            .unwrap();
+            assert_eq!(actual.manifest, expected.manifest);
+            assert_eq!(actual.fingerprint, expected.fingerprint);
+            assert_eq!(actual.report, expected.report);
+        }
+
+        let client = Client::with_uri_str(&root_uri).await.unwrap();
+        client
+            .database("inference")
+            .collection("deterministic_samples")
+            .insert_one(doc! {"_id": -1, "new_branch": true})
+            .await
+            .unwrap();
+        let changed = infer(
+            &connection(root_uri),
+            "inference",
+            "deterministic_samples",
+            &deterministic_config,
+        )
+        .await
+        .unwrap();
+        assert_ne!(changed.manifest, expected.manifest);
+        assert_ne!(changed.fingerprint, expected.fingerprint);
     });
 }

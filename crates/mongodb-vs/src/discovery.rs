@@ -289,9 +289,10 @@ pub async fn infer(
     if config.sample_size == 0 {
         evidence.sample_status = Some(EvidenceStatus::NotRequested);
     } else {
-        let pipeline = vec![doc! {"$sample": {"size": i64::from(config.sample_size)}}];
         match collection_handle
-            .aggregate(pipeline)
+            .find(doc! {})
+            .sort(doc! {"_id": 1})
+            .limit(i64::from(config.sample_size))
             .max_time(Duration::from_millis(config.max_time_ms))
             .batch_size(config.sample_size)
             .await
@@ -324,7 +325,7 @@ pub async fn infer(
                 }
                 evidence.sample_status = Some(EvidenceStatus::Available);
                 evidence.warnings.insert(format!(
-                    "bounded sampling inspected at most {} documents; unobserved fields and branches remain possible",
+                    "deterministic _id-ordered sampling inspected at most {} documents; unobserved fields and branches remain possible",
                     config.sample_size
                 ));
             }

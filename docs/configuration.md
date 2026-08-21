@@ -18,7 +18,7 @@ values are strings, following the Exasol Virtual Schema protocol.
 | `MANIFEST` | inferred | JSON string containing an explicit `exasol-json-tables-source-manifest` version 1 contract. When omitted, the collection is inferred. Despite the format name, using the separate `exasol-json-tables` project is not required. |
 | `BATCH_SIZE` | `128` | Positive MongoDB cursor batch size. |
 | `ENABLE_PUSHDOWN` | `true` | Advertise supported query-pushdown capabilities. Set to `false` for operational rollback or result-oracle testing. |
-| `INFERENCE_SAMPLE_SIZE` | `100` | Maximum sampled documents, from `0` to `10000`. Use `0` for validator/index-only inference. |
+| `INFERENCE_SAMPLE_SIZE` | `100` | Maximum documents read in ascending `_id` order, from `0` to `10000`. Use `0` for validator/index-only inference. |
 | `INFERENCE_MAX_BYTES` | `8388608` | Maximum encoded bytes inspected across sampled documents; maximum `67108864`. |
 | `INFERENCE_MAX_DEPTH` | `8` | Maximum inferred nesting depth; maximum `32`. |
 | `INFERENCE_ARRAY_ELEMENTS` | `32` | Distributed positions inspected per sampled array; maximum `1000`. |

@@ -39,7 +39,7 @@ but indexes do not fabricate collection values or scalar types.
 
 ## Sampling and budgets
 
-Sampling uses MongoDB `$sample` and is bounded by:
+Sampling reads documents in ascending MongoDB `_id` order and is bounded by:
 
 - document count;
 - total encoded bytes;
@@ -49,15 +49,18 @@ Sampling uses MongoDB `$sample` and is bounded by:
 
 Array positions are distributed across the array rather than taking only a long
 prefix. Reaching a budget records a warning and produces an intentionally
-incomplete report.
+incomplete report. The stable `_id` order makes repeated inference over an
+unchanged collection and configuration reproducible. It intentionally favors
+repeatability over random exploration; use an explicit manifest when a reviewed
+contract must cover known rare branches.
 
 See [Configuration](configuration.md) for defaults and maximum values.
 
 ## Determinism and refresh
 
-Normalized evidence is resolved by a pure deterministic step. Databases,
-collections, paths, fields, BSON branches, and generated names are sorted before
-contract generation.
+Documents are selected in stable `_id` order, and normalized evidence is
+resolved by a pure deterministic step. Databases, collections, paths, fields,
+BSON branches, and generated names are sorted before contract generation.
 
 The inference fingerprint covers canonical collection metadata, UUID and
 validator/options, complete index specifications, inference configuration, and
