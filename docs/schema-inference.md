@@ -37,6 +37,12 @@ Index evidence retains ordered key paths and key kinds together with `unique`,
 `sparse`, partial-filter, and hidden attributes. Index literals can add evidence,
 but indexes do not fabricate collection values or scalar types.
 
+MongoDB represents text indexes internally as `_fts` and `_ftsx` keys. The
+connector reconstructs their user-facing source paths from the index `weights`
+metadata and reports those paths with kind `text`. If a server omits the source
+metadata, inference reports an explicit warning instead of exposing the internal
+keys as collection fields.
+
 ## Sampling and budgets
 
 Sampling reads documents in ascending MongoDB `_id` order and is bounded by:

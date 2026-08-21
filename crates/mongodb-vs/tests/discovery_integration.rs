@@ -48,6 +48,20 @@ fn discovers_validator_indexes_samples_and_permission_gaps() {
         assert!(first.report.indexes.iter().any(|index| {
             index.name == "email_unique" && index.unique && index.keys[0].path == "email"
         }));
+        assert!(first.report.indexes.iter().any(|index| {
+            index.name == "name_text"
+                && index.keys
+                    == [mongodb_vs::discovery::IndexKeyEvidence {
+                        path: "name".into(),
+                        kind: "text".into(),
+                    }]
+        }));
+        assert!(first.report.indexes.iter().all(|index| {
+            index
+                .keys
+                .iter()
+                .all(|key| key.path != "_fts" && key.path != "_ftsx")
+        }));
         assert!(first.report.paths.iter().any(|path| {
             path.path == ["age"]
                 && path.declared == ["null", "int32", "int64"]

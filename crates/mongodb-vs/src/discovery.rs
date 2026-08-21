@@ -571,21 +571,28 @@ fn extract_index(index: &Document, evidence: &mut Evidence) {
     let name = index.get_str("name").unwrap_or("(unnamed)").to_owned();
     let mut keys = Vec::new();
     if let Ok(key_document) = index.get_document("key") {
+        let internal_text_index = matches!(key_document.get("_fts"), Some(Bson::String(kind)) if kind == "text")
+            && key_document.contains_key("_ftsx");
         for (path, kind) in key_document {
-            let kind = match kind {
-                Bson::Int32(value) => value.to_string(),
-                Bson::Int64(value) => value.to_string(),
-                Bson::Double(value) => value.to_string(),
-                Bson::String(value) => value.clone(),
-                _ => "other".into(),
-            };
-            indexed_path_mut(&mut evidence.root, path)
-                .indexed_by
-                .insert(name.clone());
-            keys.push(IndexKeyEvidence {
-                path: path.clone(),
-                kind,
-            });
+            if internal_text_index && path == "_fts" {
+                match index.get_document("weights") {
+                    Ok(weights) if !weights.is_empty() => {
+                        for source_path in weights.keys() {
+                            record_index_key(source_path, "text", &name, &mut keys, evidence);
+                        }
+                    }
+                    _ => {
+                        evidence.warnings.insert(format!(
+                            "text index '{name}' does not expose source weights; its source paths are unavailable"
+                        ));
+                    }
+                }
+                continue;
+            }
+            if internal_text_index && path == "_ftsx" {
+                continue;
+            }
+            record_index_key(path, &index_key_kind(kind), &name, &mut keys, evidence);
         }
     }
     evidence.indexes.push(IndexEvidence {
@@ -595,6 +602,32 @@ fn extract_index(index: &Document, evidence: &mut Evidence) {
         sparse: index.get_bool("sparse").unwrap_or(false),
         partial: index.contains_key("partialFilterExpression"),
         hidden: index.get_bool("hidden").unwrap_or(false),
+    });
+}
+
+fn index_key_kind(kind: &Bson) -> String {
+    match kind {
+        Bson::Int32(value) => value.to_string(),
+        Bson::Int64(value) => value.to_string(),
+        Bson::Double(value) => value.to_string(),
+        Bson::String(value) => value.clone(),
+        _ => "other".into(),
+    }
+}
+
+fn record_index_key(
+    path: &str,
+    kind: &str,
+    index_name: &str,
+    keys: &mut Vec<IndexKeyEvidence>,
+    evidence: &mut Evidence,
+) {
+    indexed_path_mut(&mut evidence.root, path)
+        .indexed_by
+        .insert(index_name.to_owned());
+    keys.push(IndexKeyEvidence {
+        path: path.to_owned(),
+        kind: kind.to_owned(),
     });
 }
 
@@ -1378,6 +1411,86 @@ mod tests {
                 .iter()
                 .any(|path| path.path == ["email"] && path.indexed_by == ["email_unique"])
         );
+    }
+
+    #[test]
+    fn text_indexes_report_source_weights_instead_of_internal_fts_keys() {
+        let mut evidence = Evidence::default();
+        extract_index(
+            &doc! {
+                "name": "search_text",
+                "key": {"tenant": 1, "_fts": "text", "_ftsx": 1},
+                "weights": {"narrative": 1, "title": 5},
+            },
+            &mut evidence,
+        );
+
+        assert_eq!(
+            evidence.indexes[0].keys,
+            vec![
+                IndexKeyEvidence {
+                    path: "tenant".into(),
+                    kind: "1".into(),
+                },
+                IndexKeyEvidence {
+                    path: "narrative".into(),
+                    kind: "text".into(),
+                },
+                IndexKeyEvidence {
+                    path: "title".into(),
+                    kind: "text".into(),
+                },
+            ]
+        );
+        for path in ["tenant", "narrative", "title"] {
+            assert!(
+                evidence.root.fields[path]
+                    .indexed_by
+                    .contains("search_text")
+            );
+        }
+        assert!(!evidence.root.fields.contains_key("_fts"));
+        assert!(!evidence.root.fields.contains_key("_ftsx"));
+    }
+
+    #[test]
+    fn non_text_fts_field_and_text_index_without_weights_are_not_misrepresented() {
+        let mut evidence = Evidence::default();
+        extract_index(
+            &doc! {"name": "literal_fts", "key": {"_fts": 1}},
+            &mut evidence,
+        );
+        assert_eq!(evidence.indexes[0].keys[0].path, "_fts");
+
+        extract_index(
+            &doc! {
+                "name": "opaque_text",
+                "key": {"_fts": "text", "_ftsx": 1},
+            },
+            &mut evidence,
+        );
+        assert!(evidence.indexes[1].keys.is_empty());
+        assert!(evidence.warnings.iter().any(|warning| {
+            warning.contains("opaque_text") && warning.contains("source paths are unavailable")
+        }));
+    }
+
+    #[test]
+    fn ordinary_hashed_and_wildcard_index_keys_are_unchanged() {
+        let mut evidence = Evidence::default();
+        for (name, path, kind) in [
+            ("ordinary", "account.id", Bson::Int32(-1)),
+            ("hashed", "external_ref", Bson::String("hashed".into())),
+            ("wildcard", "$**", Bson::Int32(1)),
+        ] {
+            extract_index(
+                &doc! {"name": name, "key": {path: kind.clone()}},
+                &mut evidence,
+            );
+            let key = evidence.indexes.last().unwrap().keys.first().unwrap();
+            assert_eq!(key.path, path);
+            assert_eq!(key.kind, index_key_kind(&kind));
+        }
     }
 
     #[test]
