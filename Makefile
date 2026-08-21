@@ -1,6 +1,6 @@
-COVERAGE_MIN_LINES ?= 85
-COVERAGE_MIN_FUNCTIONS ?= 75
-COVERAGE_MIN_REGIONS ?= 85
+COVERAGE_MIN_LINES ?= 90
+COVERAGE_MIN_FUNCTIONS ?= 85
+COVERAGE_MIN_REGIONS ?= 90
 COVERAGE_REPORT ?= target/coverage/lcov.info
 
 .PHONY: test property-tests check quality fmt-check lint-rust lint-shell dependencies coverage \

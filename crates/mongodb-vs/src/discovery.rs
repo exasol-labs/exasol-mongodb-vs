@@ -1941,6 +1941,128 @@ mod tests {
     }
 
     #[test]
+    fn inference_helpers_cover_malformed_metadata_and_boundary_shapes() {
+        assert_eq!(
+            first_batch_document(&doc! {"cursor":{"firstBatch":[{"value":7}]}}),
+            Some(doc! {"value":7})
+        );
+        for malformed in [
+            doc! {},
+            doc! {"cursor": 1},
+            doc! {"cursor":{"firstBatch": 1}},
+            doc! {"cursor":{"firstBatch": []}},
+            doc! {"cursor":{"firstBatch": [1]}},
+        ] {
+            assert_eq!(first_batch_document(&malformed), None);
+        }
+
+        let mut declared = BTreeSet::new();
+        let mut warnings = BTreeSet::new();
+        extract_declared_types(
+            &Bson::Array(vec![Bson::String("integer".into()), Bson::Int32(1)]),
+            &mut declared,
+            &mut warnings,
+        );
+        assert!(declared.contains(&ValueKind::Int32));
+        assert!(declared.contains(&ValueKind::Int64));
+        extract_declared_types(
+            &Bson::String("futureType".into()),
+            &mut declared,
+            &mut warnings,
+        );
+        extract_declared_types(&Bson::Int32(1), &mut declared, &mut warnings);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("futureType"))
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("shape")));
+
+        for bson_type in [
+            "binData",
+            "regex",
+            "javascript",
+            "javascriptWithScope",
+            "dbPointer",
+            "symbol",
+            "undefined",
+            "minKey",
+            "maxKey",
+        ] {
+            assert_eq!(validator_kind(bson_type), Some(ValueKind::ExtendedJson));
+        }
+        assert_eq!(validator_kind("not-a-type"), None);
+
+        let mut root = NodeEvidence::default();
+        extract_schema(
+            &doc! {"properties":{"nested":{"bsonType":"string"}}},
+            &mut root,
+            true,
+            1,
+            1,
+            &mut warnings,
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("depth budget"))
+        );
+        extract_query_predicates(
+            &doc! {"plain": 42, "$expr": {"$eq":[1, 1]}},
+            &mut root,
+            &mut warnings,
+            PredicateScope::Validator,
+        );
+        assert!(root.fields["plain"].required);
+        assert!(root.fields["plain"].declared.contains(&ValueKind::Int32));
+        assert!(warnings.iter().any(|warning| warning.contains("$expr")));
+
+        let mut evidence = Evidence::default();
+        extract_index(
+            &doc! {
+                "name":"mixed",
+                "key":{"a":1_i64,"b":-1.5,"c":"hashed","d":true},
+                "unique":true,"sparse":true,"hidden":true
+            },
+            &mut evidence,
+        );
+        assert_eq!(evidence.indexes[0].keys.len(), 4);
+        assert_eq!(evidence.indexes[0].keys[3].kind, "other");
+        assert!(evidence.indexes[0].unique);
+        assert!(evidence.indexes[0].sparse);
+        assert!(evidence.indexes[0].hidden);
+        extract_index(&doc! {"unique":"not-a-bool"}, &mut evidence);
+        assert_eq!(evidence.indexes[1].name, "(unnamed)");
+
+        let mut kinds = vec![ValueKind::String, ValueKind::Int32, ValueKind::Int64];
+        merge_integer_kinds(&mut kinds);
+        assert_eq!(kinds, [ValueKind::String, ValueKind::Integer]);
+        let mut counts = NodeEvidence::default();
+        counts.observed.insert(ValueKind::Int32, 2);
+        counts.observed.insert(ValueKind::Int64, 3);
+        assert_eq!(observed_count(&counts, ValueKind::Integer), 5);
+        assert_eq!(
+            scalar_mapping(ValueKind::Decimal128).1,
+            BsonKind::Decimal128
+        );
+
+        assert!(identifier("", false).starts_with("T_"));
+        assert!(identifier("1table", false).starts_with("T_"));
+        let shortened = identifier(&"a".repeat(120), false);
+        assert!(shortened.len() <= 96);
+        assert_ne!(shortened, "a".repeat(120));
+        assert_eq!(
+            canonical_bson(&Bson::Array(vec![Bson::Document(doc! {"b":1,"a":2})])),
+            Bson::Array(vec![Bson::Document(doc! {"a":2,"b":1})])
+        );
+        assert!(
+            mongo_error("listing metadata")
+                .to_string()
+                .contains("listing metadata")
+        );
+    }
+
+    #[test]
     fn observations_cover_scalar_families_and_depth_and_array_budgets() {
         let config = InferenceConfig {
             max_depth: 2,

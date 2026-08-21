@@ -26,8 +26,8 @@ make quality    # complete pre-merge gate
 
 `make quality` runs locked-dependency builds, formatting, Clippy with all
 warnings denied, ShellCheck, dependency advisory/license/source policy, and all
-tests under LLVM coverage. It enforces at least 85% line and region coverage and
-75% function coverage. The per-file summary is printed in the gate log, and
+tests under LLVM coverage. It enforces at least 90% line and region coverage and
+85% function coverage. The per-file summary is printed in the gate log, and
 LCOV output is written to `target/coverage/lcov.info` before thresholds are
 evaluated so failed coverage gates remain diagnosable.
 

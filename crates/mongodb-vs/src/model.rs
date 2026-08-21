@@ -712,6 +712,8 @@ mod tests {
         let base: Json = serde_json::from_str(&manifest_json()).unwrap();
         let mutations: &[ManifestMutation] = &[
             ("format", Box::new(|v| v["format"] = json!("wrong"))),
+            ("version", Box::new(|v| v["version"] = json!(99))),
+            ("no tables", Box::new(|v| v["tables"] = json!([]))),
             (
                 "duplicate table",
                 Box::new(|v| v["tables"][1]["tableName"] = json!("PEOPLE")),
@@ -737,8 +739,25 @@ mod tests {
                 Box::new(|v| v["tables"][0]["columns"][1]["name"] = json!("_id")),
             ),
             (
+                "zero ordinal",
+                Box::new(|v| v["tables"][0]["columns"][0]["ordinal"] = json!(0)),
+            ),
+            (
+                "duplicate ordinal",
+                Box::new(|v| v["tables"][0]["columns"][1]["ordinal"] = json!(1)),
+            ),
+            (
                 "empty columns",
                 Box::new(|v| v["tables"][0]["columns"] = json!([])),
+            ),
+            (
+                "multiple roots",
+                Box::new(|v| {
+                    v["tables"][1]["path"] = json!("");
+                    v["tables"][1]["pathSegments"] = json!([]);
+                    v["tables"][1]["kind"] = json!("object");
+                    v["tables"][1]["columns"] = v["tables"][0]["columns"].clone();
+                }),
             ),
         ];
         for (label, mutate) in mutations {

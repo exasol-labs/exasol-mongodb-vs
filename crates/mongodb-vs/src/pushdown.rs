@@ -2246,4 +2246,93 @@ mod tests {
             assert!(plan(&case, &columns()).is_err(), "{case}");
         }
     }
+
+    #[test]
+    fn fallback_and_parser_boundaries_remain_conservative() {
+        assert!(MongoPushdown::default().is_empty());
+        assert!(
+            !MongoPushdown {
+                limit: Some(0),
+                ..MongoPushdown::default()
+            }
+            .is_empty()
+        );
+
+        for request in [
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"global","selectList":[]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","groupBy":[],"selectList":[]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","having":{},"selectList":[]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","orderBy":[],"selectList":[]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group"}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","selectList":[]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","selectList":[{"type":"literal_string","value":"x"}]}}),
+            serde_json::json!({"pushdownRequest":{"type":"select","aggregationType":"single_group","selectList":[{"type":"function_aggregate","name":"count"}],"selectListDataTypes":[]}}),
+        ] {
+            assert!(plan(&request, &columns()).is_err(), "{request}");
+        }
+
+        for literal in [
+            serde_json::json!({"type":"literal_bool"}),
+            serde_json::json!({"type":"literal_bool","value":"true"}),
+            serde_json::json!({"type":"literal_exactnumeric","value":true}),
+            serde_json::json!({"type":"literal_string","value":1}),
+            serde_json::json!({"type":"literal_unknown","value":1}),
+        ] {
+            assert!(parse_literal(&literal).is_err(), "{literal}");
+        }
+        for order_by in [
+            serde_json::json!({"orderBy":{}}),
+            serde_json::json!({"orderBy":[{"expression":{"type":"literal_string","value":"x"},"isAscending":true,"nullsLast":true}]}),
+            serde_json::json!({"orderBy":[{"expression":{"type":"column","name":"age"},"nullsLast":true}]}),
+            serde_json::json!({"orderBy":[{"expression":{"type":"column","name":"age"},"isAscending":true}]}),
+        ] {
+            assert!(parse_order_by(&order_by).is_err(), "{order_by}");
+        }
+
+        assert_eq!(combine_path_prefilters("$and", vec![]), None);
+        assert_eq!(
+            combine_path_prefilters("$and", vec![doc! {"age":1}]),
+            Some(doc! {"age":1})
+        );
+        assert!(matches!(
+            type_selector(vec![
+                Bson::String("int".into()),
+                Bson::String("long".into())
+            ]),
+            Bson::Array(_)
+        ));
+
+        let unknown_sort = MongoPushdown {
+            order_by: vec![SortKey {
+                column: "missing".into(),
+                ascending: true,
+                nulls_last: false,
+            }],
+            ..MongoPushdown::default()
+        };
+        assert!(mongo_stages(&unknown_sort, &columns()).is_empty());
+        let overflowing_limit = MongoPushdown {
+            limit: Some(u64::MAX),
+            ..MongoPushdown::default()
+        };
+        assert!(mongo_stages(&overflowing_limit, &columns()).is_empty());
+
+        let remote_column_count = QueryPlan {
+            selected: vec![],
+            required: vec!["age".into()],
+            filter: None,
+            order_by: vec![],
+            limit: None,
+            aggregation: Some(SingleGroupAggregation {
+                expressions: vec![AggregateExpr::CountColumn {
+                    column: "age".into(),
+                }],
+            }),
+            mongo: MongoPushdown {
+                aggregation: Some(MongoAggregation::CountStar),
+                ..MongoPushdown::default()
+            },
+        };
+        assert!(render_outer_sql("SELECT scan", &remote_column_count, &columns()).is_err());
+    }
 }

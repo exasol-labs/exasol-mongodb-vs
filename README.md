@@ -305,8 +305,8 @@ make quality
 ```
 
 The quality gate enforces formatting, warning-free Clippy, ShellCheck,
-dependency policy, tests, at least 85% line and region coverage, and at least
-75% function coverage. See [Development and testing](docs/development.md) for setup and the
+dependency policy, tests, at least 90% line and region coverage, and at least
+85% function coverage. See [Development and testing](docs/development.md) for setup and the
 MongoDB/Exasol integration suites.
 
 Pull requests are welcome. Please include tests for behavioral changes and keep
