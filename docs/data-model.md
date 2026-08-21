@@ -72,6 +72,79 @@ Only one value branch is populated for a document. Queries fail if they read a
 BSON branch absent from the current contract; refresh the inferred schema or
 update the explicit manifest after an intentional change.
 
+### Aggregate polymorphic numeric fields
+
+Aggregate the branches as one row-level value before applying an aggregate.
+For example, if inference exposes an integer branch as `amount` and a finite
+double branch as `amount|double`, use:
+
+```sql
+SELECT
+  SUM(COALESCE(
+    CAST("amount" AS DOUBLE PRECISION),
+    "amount|double"
+  )) AS amount_total,
+  AVG(COALESCE(
+    CAST("amount" AS DOUBLE PRECISION),
+    "amount|double"
+  )) AS amount_average,
+  COUNT(COALESCE(
+    CAST("amount" AS DOUBLE PRECISION),
+    "amount|double"
+  )) AS numeric_amount_count
+FROM MONGO_DEMO."MEASUREMENTS";
+```
+
+Do not calculate the branches independently and then combine the aggregates.
+For example, `AVG("amount") + AVG("amount|double")` has no useful meaning, and
+`SUM("amount") + SUM("amount|double")` becomes `NULL` within any group where one
+branch is absent. Row-level `COALESCE` preserves the tagged-union rule that at
+most one scalar branch is populated for each source value.
+
+The unsuffixed name belongs to the branch with the strongest inference evidence,
+so inspect the generated column names and types rather than assuming that it is
+the integer branch. A collection where doubles dominate might instead expose
+`amount DOUBLE PRECISION` and `amount|integer DECIMAL(19,0)`; reverse the
+branches as `COALESCE("amount", CAST("amount|integer" AS DOUBLE PRECISION))`.
+Choose the common SQL type deliberately: converting a 64-bit integer to
+`DOUBLE PRECISION` can lose precision, while converting arbitrary doubles to a
+fixed-scale `DECIMAL` can round or overflow.
+
+NaN and positive or negative infinity are not members of the finite-double
+branch. They are exposed separately as canonical Extended JSON text in a
+`non_finite_double` branch and must not be included in a numeric `COALESCE`.
+Account for them explicitly when completeness matters, for example:
+
+```sql
+SELECT
+  COUNT(COALESCE(
+    CAST("amount" AS DOUBLE PRECISION),
+    "amount|double"
+  )) AS finite_numeric_count,
+  COUNT("amount|non_finite_double") AS non_finite_count
+FROM MONGO_DEMO."MEASUREMENTS";
+```
+
+Adjust the physical names in these examples to the inferred schema. In
+particular, the base `amount` column itself may be the non-finite branch if that
+branch has the strongest evidence.
+
+When validating results directly in MongoDB, use BSON type predicates rather
+than JavaScript `typeof`. The shell presents BSON Int32, Int64, and Double values
+as JavaScript numbers in contexts where `typeof` cannot distinguish their source
+types. Also remember that `{amount: {$type: "double"}}` includes NaN and both
+infinities. A ground-truth filter for the connector's finite-double branch must
+exclude those values explicitly:
+
+```javascript
+{
+  amount: {
+    $type: "double",
+    $nin: [NaN, Infinity, -Infinity]
+  }
+}
+```
+
 ## BSON-to-Exasol mapping
 
 The general rule is: use a native Exasol scalar when the conversion is lossless;

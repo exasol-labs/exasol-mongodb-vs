@@ -260,6 +260,15 @@ that value with dot or bracket syntax instead. Use these JSON-aware helpers,
 not Exasol's built-in `TYPEOF` or a plain `CAST`, when the original per-document
 JSON type matters.
 
+When querying the connector's native physical tables instead of this logical
+JSON wrapper, aggregate polymorphic numeric branches row by row. For example,
+use `SUM(COALESCE(CAST("amount" AS DOUBLE PRECISION),
+"amount|double"))`, not separate sums for the integer and double columns. The
+exact branch names depend on the inferred schema, and NaN and infinities remain
+in a separate canonical-text branch. See [Aggregate polymorphic numeric
+fields](data-model.md#aggregate-polymorphic-numeric-fields) for the complete
+pattern and its precision caveats.
+
 ## Distinguish missing from explicit null
 
 Both a missing property and an explicit MongoDB `null` appear as SQL `NULL` in

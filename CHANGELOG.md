@@ -27,3 +27,5 @@ All notable changes to this project are documented here. The format follows
   instead of transferring the full collection for Exasol-side filtering.
 - Every advertised predicate capability is covered by a source-delegation
   contract test, and direct `>` / `>=` predicates are now advertised and pushed.
+- Documented safe row-level aggregation across polymorphic numeric branches,
+  including finite-double validation and non-finite-value accounting.
