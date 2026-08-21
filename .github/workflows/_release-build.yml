@@ -1,0 +1,103 @@
+name: Reusable release build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version, with or without a leading v
+        required: true
+        type: string
+      run_fuzz:
+        description: Run the optional release fuzzing campaign
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      artifact_name:
+        description: Name of the uploaded release artifact
+        value: ${{ jobs.package.outputs.artifact_name }}
+      version:
+        description: Normalized release version
+        value: ${{ jobs.package.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Release quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install pinned quality tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          cargo install cargo-llvm-cov --version 0.8.4 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Validate release metadata
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: ./scripts/verify_release_version.sh "$RELEASE_VERSION"
+      - name: Run quality gate
+        run: make quality
+
+  mongodb-integration:
+    name: Release MongoDB integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Run MongoDB integration tests
+        run: make test-integration
+
+  fuzz:
+    name: Optional release fuzzing
+    if: ${{ inputs.run_fuzz }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned fuzz tooling
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Replay corpora and run bounded campaigns
+        run: make fuzz-replay fuzz-release
+
+  package:
+    name: Build verified release package
+    needs: [quality, mongodb-integration, fuzz]
+    if: ${{ always() && needs.quality.result == 'success' && needs.mongodb-integration.result == 'success' && (needs.fuzz.result == 'success' || needs.fuzz.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Normalize release metadata
+        id: metadata
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          version="${REQUESTED_VERSION#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=exasol-mongodb-vs-$version-release" >> "$GITHUB_OUTPUT"
+      - name: Build supported Linux UDF
+        run: make build-so
+      - name: Verify and package release
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          SOURCE_DATE_EPOCH: "0"
+        run: make package-release VERSION="$RELEASE_VERSION" RELEASE_OUTPUT_DIR=target/release-package RELEASE_PLATFORM=linux-x86_64
+      - name: Upload release package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: target/release-package/*
+          if-no-files-found: error
+          retention-days: 30

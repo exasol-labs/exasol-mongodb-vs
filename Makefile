@@ -10,7 +10,8 @@ FUZZ_RSS_LIMIT_MB ?= 2048
 FUZZ_TARGETS := manifest_parse scan_spec_parse pushdown_plan
 
 .PHONY: test property-tests check quality fmt-check lint-rust lint-shell dependencies coverage \
-	build-so verify-so test-integration test-e2e fuzz-replay fuzz-release
+	build-so verify-so test-integration test-e2e fuzz-replay fuzz-release \
+	verify-release-version package-release
 
 # Fast developer loop. Coverage deliberately owns the authoritative test run in
 # `quality`, so the full gate does not execute the suite twice.
@@ -77,6 +78,13 @@ build-so:
 
 verify-so:
 	./scripts/verify_artifact.sh target/release/libmongodb_vs.so
+
+verify-release-version:
+	@test -n "$(VERSION)" || { echo "error: VERSION is required" >&2; exit 1; }
+	./scripts/verify_release_version.sh "$(VERSION)"
+
+package-release: verify-so verify-release-version
+	./scripts/package_release.sh "$(VERSION)" "$(RELEASE_OUTPUT_DIR)" "$(RELEASE_PLATFORM)"
 
 test-integration:
 	./scripts/run_mongodb_integration.sh

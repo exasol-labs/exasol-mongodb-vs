@@ -11,14 +11,16 @@ use sha2::{Digest, Sha256};
 
 use crate::connection;
 use crate::model::{
-    BsonKind, ExplicitManifest, MANIFEST_FORMAT, MANIFEST_VERSION, ManifestColumn, PathKind,
-    PathSegment, RelationshipSpec, RootSpec, TableSpec,
+    BsonKind, ExplicitManifest, MANIFEST_FORMAT, MANIFEST_VERSION, MAX_IDENTIFIER_BYTES,
+    ManifestColumn, PathKind, PathSegment, RelationshipSpec, RootSpec, TableSpec,
 };
 
 const MAX_SAMPLE_DOCUMENTS: u32 = 10_000;
 const MAX_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARRAY_ELEMENTS: usize = 1_000;
 const MAX_INFERENCE_TIME_MS: u64 = 60_000;
+// Reserve room for the longest suffix added by `add_scalar_columns`.
+const MAX_FIELD_BASE_BYTES: usize = MAX_IDENTIFIER_BYTES - "|timestamp_increment".len();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1138,9 +1140,21 @@ fn physical_field_name(source: &str) -> String {
             "_parent" | "_pos" | "_value" | crate::model::SOURCE_JSON_COLUMN
         )
     {
-        return source.into();
+        return shorten_with_hash(source, MAX_FIELD_BASE_BYTES);
     }
     format!("field_{}", short_hash(source.as_bytes()))
+}
+
+fn shorten_with_hash(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.into();
+    }
+    let suffix = format!("_{}", short_hash(value.as_bytes()));
+    let mut prefix_bytes = max_bytes - suffix.len();
+    while !value.is_char_boundary(prefix_bytes) {
+        prefix_bytes -= 1;
+    }
+    format!("{}{}", &value[..prefix_bytes], suffix)
 }
 
 fn physical_field_names(fields: &BTreeMap<String, NodeEvidence>) -> BTreeMap<String, String> {
@@ -1682,6 +1696,113 @@ mod tests {
             )
             .contains("arr")
         );
+    }
+
+    #[test]
+    fn resolver_bounds_long_field_names_before_adding_suffixes() {
+        let long_string = "x".repeat(180);
+        let long_nested = "nested_".to_owned() + &"y".repeat(170);
+        let long_nested_field = "z".repeat(170);
+        let long_timestamp = "timestamp_".to_owned() + &"t".repeat(170);
+        let unicode = "🙂".repeat(40);
+        let shared_prefix = "p".repeat(180);
+
+        let mut root = NodeEvidence::default();
+        for name in [
+            long_string.clone(),
+            unicode.clone(),
+            format!("{shared_prefix}a"),
+            format!("{shared_prefix}b"),
+        ] {
+            root.fields
+                .entry(name)
+                .or_default()
+                .observed
+                .insert(ValueKind::String, 1);
+        }
+        root.fields
+            .get_mut(&long_string)
+            .unwrap()
+            .observed
+            .insert(ValueKind::Null, 1);
+        root.fields
+            .entry(long_timestamp.clone())
+            .or_default()
+            .observed
+            .insert(ValueKind::Timestamp, 1);
+        let nested = root.fields.entry(long_nested.clone()).or_default();
+        nested.observed.insert(ValueKind::Object, 1);
+        nested
+            .fields
+            .entry(long_nested_field.clone())
+            .or_default()
+            .observed
+            .insert(ValueKind::Int32, 1);
+
+        let manifest = resolve_manifest("identifier_limits", &root, &mut BTreeSet::new()).unwrap();
+        assert!(
+            manifest
+                .tables
+                .iter()
+                .all(|table| table.table_name.len() <= MAX_IDENTIFIER_BYTES)
+        );
+        assert!(manifest.tables.iter().all(|table| {
+            table
+                .columns
+                .iter()
+                .all(|column| column.name.len() <= MAX_IDENTIFIER_BYTES)
+        }));
+
+        let root_table = manifest
+            .tables
+            .iter()
+            .find(|table| table.path_segments.is_empty())
+            .unwrap();
+        for source in [&long_string, &unicode, &long_timestamp] {
+            assert!(
+                root_table
+                    .columns
+                    .iter()
+                    .any(|column| column.source_name.as_ref() == Some(source))
+            );
+        }
+        assert!(root_table.columns.iter().any(|column| {
+            column.source_name.as_ref() == Some(&long_string) && column.name.ends_with("|empty")
+        }));
+        assert!(root_table.columns.iter().any(|column| {
+            column.source_name.as_ref() == Some(&long_timestamp)
+                && column.name.ends_with("|timestamp_increment")
+                && column.name.len() == MAX_IDENTIFIER_BYTES
+        }));
+
+        let shared_names = root_table
+            .columns
+            .iter()
+            .filter(|column| {
+                column
+                    .source_name
+                    .as_deref()
+                    .is_some_and(|source| source.starts_with(&shared_prefix))
+                    && !column.name.ends_with("|empty")
+            })
+            .map(|column| column.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(shared_names.len(), 2);
+
+        let nested_table = manifest
+            .tables
+            .iter()
+            .find(|table| {
+                table
+                    .path_segments
+                    .last()
+                    .is_some_and(|segment| segment.name == long_nested)
+            })
+            .unwrap();
+        assert!(nested_table.columns.iter().any(|column| {
+            column.source_name.as_ref() == Some(&long_nested_field)
+                && column.name.len() <= MAX_IDENTIFIER_BYTES
+        }));
     }
 
     #[test]

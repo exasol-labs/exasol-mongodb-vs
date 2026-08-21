@@ -72,6 +72,10 @@ The GitHub Actions workflow runs the same quality gate, MongoDB inference
 integration tests, and an independent Linux artifact check. Workflow actions and
 auxiliary Rust tools are pinned.
 
+Release candidates and draft releases use separate workflows. See
+[Release process](releasing.md) for versioning, artifact, provenance, live-test,
+and manual publication gates.
+
 ## Linux UDF artifact
 
 ```bash

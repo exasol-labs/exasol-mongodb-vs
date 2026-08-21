@@ -72,6 +72,7 @@ proptest! {
         prop_assert_eq!(names.len(), fields.len());
         prop_assert_eq!(unique.len(), names.len());
         prop_assert!(names.values().all(|name| !name.is_empty()));
+        prop_assert!(names.values().all(|name| name.len() <= MAX_FIELD_BASE_BYTES));
         let avoids_structural_names = names.values().all(|name| {
             !matches!(name.as_str(), "_id" | "_parent" | "_pos" | "_value")
         });

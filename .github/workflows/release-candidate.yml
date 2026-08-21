@@ -1,0 +1,27 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version from Cargo.toml, with or without a leading v
+        required: true
+        type: string
+      run_fuzz:
+        description: Run the optional bounded fuzzing campaign
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-candidate-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_release-build.yml
+    with:
+      version: ${{ inputs.version }}
+      run_fuzz: ${{ inputs.run_fuzz }}

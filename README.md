@@ -290,6 +290,7 @@ Not yet part of the supported release scope:
 | [Query pushdown](docs/pushdown.md) | Advertised operations, exact MongoDB translations, and conservative fallbacks |
 | [Aggregation pushdown](docs/aggregation-pushdown.md) | Current `COUNT(*)` contract, fallbacks, and roadmap for additional aggregates |
 | [Development](docs/development.md) | Tooling, tests, coverage, Linux artifact build, and live E2E execution |
+| [Release process](docs/releasing.md) | Candidate builds, checksums, provenance, live validation, and draft releases |
 
 ## Development
 

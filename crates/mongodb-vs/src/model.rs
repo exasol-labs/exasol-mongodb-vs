@@ -7,6 +7,8 @@ use serde_json::{Value as Json, json};
 pub const MANIFEST_FORMAT: &str = "exasol-json-tables-source-manifest";
 pub const MANIFEST_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 1_500_000;
+/// Maximum UTF-8 byte length accepted by Exasol for table and column names.
+pub const MAX_IDENTIFIER_BYTES: usize = 128;
 /// Opaque connector column used by `TO_JSON()` to return the complete source
 /// document without reconstructing it from inferred fields.
 pub const SOURCE_JSON_COLUMN: &str = "__mongodb_source_json";
@@ -288,6 +290,13 @@ impl ExplicitManifest {
         let mut table_names = HashSet::new();
         let mut root_count = 0;
         for table in &self.tables {
+            if table.table_name.len() > MAX_IDENTIFIER_BYTES {
+                return Err(user(format!(
+                    "MANIFEST table name '{}' is {} bytes; maximum is {MAX_IDENTIFIER_BYTES}",
+                    table.table_name,
+                    table.table_name.len()
+                )));
+            }
             if table.table_name.is_empty() || !table_names.insert(table.table_name.clone()) {
                 return Err(user("MANIFEST table names must be non-empty and unique"));
             }
@@ -311,6 +320,14 @@ impl ExplicitManifest {
             let mut names = HashSet::new();
             let mut ordinals = HashSet::new();
             for column in &table.columns {
+                if column.name.len() > MAX_IDENTIFIER_BYTES {
+                    return Err(user(format!(
+                        "column '{}' in table '{}' is {} bytes; maximum is {MAX_IDENTIFIER_BYTES}",
+                        column.name,
+                        table.table_name,
+                        column.name.len()
+                    )));
+                }
                 if column.name.is_empty()
                     || !names.insert(column.name.clone())
                     || column.ordinal == 0
@@ -787,6 +804,12 @@ mod tests {
                 Box::new(|v| v["tables"][1]["tableName"] = json!("PEOPLE")),
             ),
             (
+                "long table name",
+                Box::new(|v| {
+                    v["tables"][1]["tableName"] = json!("🙂".repeat(33));
+                }),
+            ),
+            (
                 "missing root key",
                 Box::new(|v| {
                     v["tables"][0]["columns"].as_array_mut().unwrap().remove(0);
@@ -805,6 +828,12 @@ mod tests {
             (
                 "duplicate column",
                 Box::new(|v| v["tables"][0]["columns"][1]["name"] = json!("_id")),
+            ),
+            (
+                "long column name",
+                Box::new(|v| {
+                    v["tables"][0]["columns"][2]["name"] = json!("x".repeat(129));
+                }),
             ),
             (
                 "zero ordinal",

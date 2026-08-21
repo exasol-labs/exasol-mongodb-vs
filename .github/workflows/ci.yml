@@ -2,14 +2,16 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,7 +46,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: make build-so verify-so
+      - name: Build and verify Linux UDF
+        run: make build-so verify-so
+      - name: Upload verified Linux UDF
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mongodb-vs-linux-udf-${{ github.sha }}
+          path: target/release/libmongodb_vs.so
+          if-no-files-found: error
+          retention-days: 7
 
   mongodb-integration:
     name: MongoDB inference integration

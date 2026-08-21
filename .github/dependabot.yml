@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+        exclude-patterns:
+          - exasol-udf-sdk
+          - exasol-udf-macros
+    ignore:
+      - dependency-name: exasol-udf-sdk
+      - dependency-name: exasol-udf-macros
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
