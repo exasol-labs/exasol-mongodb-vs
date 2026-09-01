@@ -42,6 +42,14 @@ struct AdapterNotes {
     inference_report: Option<InferenceReport>,
 }
 
+/// Version-only view of stored notes, so a version mismatch is reported before the
+/// body is parsed against fields an older build never wrote.
+#[derive(Deserialize)]
+struct NotesVersion {
+    #[serde(default)]
+    version: Option<u32>,
+}
+
 struct AdapterConfig {
     connection_name: String,
     database: String,
@@ -345,17 +353,45 @@ fn notes_from_request(request: &Json) -> Result<AdapterNotes, UdfError> {
             "pushdown adapterNotes exceed the supported size".into(),
         ));
     }
-    let notes: AdapterNotes = serde_json::from_str(value).map_err(|_| {
-        UdfError::User("pushdown adapterNotes are invalid; refresh the Virtual Schema".into())
-    })?;
-    if notes.version != NOTES_VERSION {
-        return Err(UdfError::User(format!(
-            "unsupported adapterNotes version {}; refresh the Virtual Schema",
-            notes.version
-        )));
+    // Read the version before the body: notes written by an older build can lack
+    // fields this build requires, and the version-aware error has to stay
+    // reachable for exactly that case.
+    let refresh = refresh_statement(request);
+    let probe: NotesVersion = serde_json::from_str(value)
+        .map_err(|_| UdfError::User(format!("pushdown adapterNotes are invalid; run {refresh}")))?;
+    match probe.version {
+        Some(NOTES_VERSION) => {}
+        Some(version) => {
+            return Err(UdfError::User(format!(
+                "unsupported adapterNotes version {version}; run {refresh}"
+            )));
+        }
+        None => {
+            return Err(UdfError::User(format!(
+                "adapterNotes were written by an adapter older than notes version \
+                 {NOTES_VERSION}; run {refresh}"
+            )));
+        }
     }
+    let notes: AdapterNotes = serde_json::from_str(value).map_err(|_| {
+        UdfError::User(format!(
+            "adapterNotes claim version {NOTES_VERSION} but are incomplete; run {refresh}"
+        ))
+    })?;
     notes.manifest.validate()?;
     Ok(notes)
+}
+
+/// The statement that rewrites the notes, named so the error is self-service.
+fn refresh_statement(request: &Json) -> String {
+    let schema = request
+        .get("schemaMetadataInfo")
+        .and_then(|metadata| metadata.get("name"))
+        .and_then(Json::as_str)
+        .filter(|name| !name.is_empty())
+        .map(quote_ident)
+        .unwrap_or_else(|| "<schema>".to_owned());
+    format!("ALTER VIRTUAL SCHEMA {schema} REFRESH")
 }
 
 fn effective_properties(request: &Json) -> Json {
@@ -747,7 +783,83 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("refresh"));
+        assert!(
+            error.contains("unsupported adapterNotes version 99"),
+            "{error}"
+        );
+        assert!(error.contains("REFRESH"), "{error}");
+    }
+
+    #[test]
+    fn notes_written_by_an_older_build_report_a_named_refresh_statement() {
+        // The flat pre-versioning shape: no `version`, no `manifest`.
+        let legacy = json!({
+            "connection_name": "MONGODB_M0",
+            "database": "milestone0",
+            "collection": "people",
+            "table_name": "PEOPLE",
+            "columns": [{"source_name":"_id","exasol_name":"_ID","kind":"OBJECT_ID"}],
+            "batch_size": 2
+        })
+        .to_string();
+        let request = |notes: &str| {
+            json!({
+                "type": "pushdown",
+                "schemaMetadataInfo": {"name": "MONGO_DEMO", "adapterNotes": notes},
+                "involvedTables": [{"name": "PEOPLE"}]
+            })
+        };
+        let error = dispatch(&mut context(), &request(&legacy))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("older than notes version 1"), "{error}");
+        assert!(
+            error.contains("ALTER VIRTUAL SCHEMA \"MONGO_DEMO\" REFRESH"),
+            "{error}"
+        );
+
+        // A known-but-unsupported version still reports the version it found.
+        let created = dispatch(&mut context(), &create_request()).unwrap();
+        let mut newer: Json =
+            serde_json::from_str(created["schemaMetadata"]["adapterNotes"].as_str().unwrap())
+                .unwrap();
+        newer["version"] = json!(2);
+        let error = dispatch(&mut context(), &request(&newer.to_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported adapterNotes version 2"),
+            "{error}"
+        );
+        assert!(
+            error.contains("ALTER VIRTUAL SCHEMA \"MONGO_DEMO\" REFRESH"),
+            "{error}"
+        );
+
+        // Current version, missing body: distinct message, same remedy.
+        let mut incomplete = newer.clone();
+        incomplete["version"] = json!(NOTES_VERSION);
+        incomplete.as_object_mut().unwrap().remove("manifest");
+        let error = dispatch(&mut context(), &request(&incomplete.to_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("incomplete"), "{error}");
+
+        // Without a schema name in the request the statement stays a placeholder.
+        let error = dispatch(
+            &mut context(),
+            &json!({
+                "type": "pushdown",
+                "schemaMetadataInfo": {"adapterNotes": legacy},
+                "involvedTables": [{"name": "PEOPLE"}]
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("ALTER VIRTUAL SCHEMA <schema> REFRESH"),
+            "{error}"
+        );
     }
 
     #[test]

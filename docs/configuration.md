@@ -82,3 +82,19 @@ Use Exasol's `ALTER VIRTUAL SCHEMA ... SET` and `REFRESH` operations according t
 your Exasol version. Changes to connection, namespace, manifest, or inference
 budgets rebuild the schema metadata. Invalid or out-of-range values fail with a
 user-facing configuration error.
+
+## Upgrading the adapter
+
+Adapter notes carry a notes version. A schema created by an adapter build whose
+notes version differs from the installed one cannot be queried: the notes are
+not migrated in place, and every statement against the schema fails with an
+error naming the version found and the statement that rewrites the notes:
+
+```sql
+ALTER VIRTUAL SCHEMA MONGO_DEMO REFRESH;
+```
+
+`REFRESH` reads current properties only, never the stored notes, so it succeeds
+against notes of any age. After it, the schema is usable again. An inferred
+schema is re-inferred by the refresh; an explicit `MANIFEST` is reused
+unchanged.

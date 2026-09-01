@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The `adapterNotes` version check is now reachable for the case it exists for.
+  Notes written before a field became required failed the whole-struct parse
+  first, so every statement against such a schema reported only the generic
+  `pushdown adapterNotes are invalid`. The version is now read before the body,
+  and the error names the version found and the exact remedy,
+  `ALTER VIRTUAL SCHEMA "<schema>" REFRESH`.
+
 ### Changed
 
 - Moved the fingerprinted pins to Rust Script Language Container 0.23.0:
