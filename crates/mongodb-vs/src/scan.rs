@@ -20,6 +20,20 @@ pub fn run_scan(ctx: &mut dyn UdfContext) -> Result<(), UdfError> {
         .ok_or_else(|| UdfError::User("MONGODB_SCAN requires a non-NULL scan spec".into()))?;
     let spec = MongoScanSpec::from_json(input)?;
 
+    // `WHERE 1 = 0` — the metadata probe JDBC, ODBC and BI clients open a table
+    // with — reaches us as a constant-false filter that excludes every document.
+    // Neither the connection nor MongoDB is needed to answer it. A remote
+    // single-group COUNT still owes Exasol its one zero row.
+    if spec.pushdown.never_matches() {
+        if spec.pushdown.aggregation == Some(MongoAggregation::CountStar) {
+            ctx.emit(&[Value::Numeric(Decimal {
+                unscaled: 0,
+                scale: 0,
+            })])?;
+        }
+        return Ok(());
+    }
+
     // Connect-back is synchronous and must happen before Tokio owns the thread.
     let resolved = connection::resolve(ctx, &spec.connection_name)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -597,6 +611,86 @@ mod tests {
             sql_type,
             bson_kind: Some(kind),
         }
+    }
+
+    /// Records emitted rows and fails any attempt to reach MongoDB.
+    struct OfflineContext {
+        input: Value,
+        emitted: Vec<Vec<Value>>,
+    }
+
+    impl UdfContext for OfflineContext {
+        fn num_columns(&self) -> usize {
+            1
+        }
+        fn get(&self, col: usize) -> Result<&Value, UdfError> {
+            assert_eq!(col, 0);
+            Ok(&self.input)
+        }
+        fn emit(&mut self, values: &[Value]) -> Result<(), UdfError> {
+            self.emitted.push(values.to_vec());
+            Ok(())
+        }
+        fn next(&mut self) -> Result<bool, UdfError> {
+            unreachable!()
+        }
+        fn connection(
+            &self,
+            _name: &str,
+        ) -> Result<exasol_udf_sdk::connect_back::ConnectionObject, UdfError> {
+            panic!("a constant-false scan must not resolve a connection")
+        }
+    }
+
+    fn offline_scan(pushdown: crate::pushdown::MongoPushdown) -> Vec<Vec<Value>> {
+        let spec = crate::wire::MongoScanSpec {
+            version: crate::wire::SCAN_SPEC_VERSION,
+            connection_name: "MONGO_CONN".into(),
+            database: "demo".into(),
+            collection: "people".into(),
+            plan: MongoReadPlan::RootFind,
+            columns: vec![scalar(
+                "name",
+                ColumnSource::Field {
+                    name: "name".into(),
+                },
+                BsonKind::String,
+                SqlType::Varchar { size: 100 },
+            )],
+            batch_size: 128,
+            pushdown,
+            inference_fingerprint: String::new(),
+        };
+        let mut ctx = OfflineContext {
+            input: Value::String(spec.to_json().unwrap()),
+            emitted: Vec::new(),
+        };
+        run_scan(&mut ctx).unwrap();
+        ctx.emitted
+    }
+
+    #[test]
+    fn a_constant_false_filter_needs_no_mongodb_round_trip() {
+        use crate::pushdown::{FilterExpr, MongoPushdown};
+
+        // `WHERE 1 = 0`: no rows, and no connection resolved.
+        let never = MongoPushdown {
+            filter: Some(FilterExpr::Constant { value: false }),
+            ..MongoPushdown::default()
+        };
+        assert!(offline_scan(never.clone()).is_empty());
+
+        // The same filter under a remote COUNT(*) still owes Exasol one zero.
+        assert_eq!(
+            offline_scan(MongoPushdown {
+                aggregation: Some(MongoAggregation::CountStar),
+                ..never
+            }),
+            vec![vec![Value::Numeric(Decimal {
+                unscaled: 0,
+                scale: 0
+            })]]
+        );
     }
 
     #[test]

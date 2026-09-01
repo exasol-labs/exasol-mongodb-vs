@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `WHERE 1 = 0` and every other predicate Exasol folds to a boolean literal —
+  `WHERE FALSE`, `WHERE 2 > 3`, `WHERE 1 = 0 AND "status" = 'x'` — no longer fail
+  with `filter contains an operation that was not advertised`. `LITERAL_BOOL` is
+  advertised but `parse_filter` had no arm for a `literal_bool` node, so the
+  standard JDBC/ODBC and BI metadata probe made every table of a virtual schema
+  unopenable. A folded boolean literal is now a first-class filter: constant-false
+  returns no rows without resolving a connection or querying MongoDB, and
+  constant-true is dropped so `LIMIT` and `ORDER BY` delegation is unaffected.
+  Constants nested in `AND`, `OR`, and `NOT` are folded on arrival.
+- The unsupported-filter error now names the node type it could not plan
+  (`filter contains an unsupported node type 'predicate_like'`) instead of
+  claiming the operation was not advertised, which was misleading for anything
+  the capability set does advertise.
 - The `adapterNotes` version check is now reachable for the case it exists for.
   Notes written before a field became required failed the whole-struct parse
   first, so every statement against such a schema reported only the generic

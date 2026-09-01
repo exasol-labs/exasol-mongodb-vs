@@ -20,6 +20,25 @@ The capability set covers:
 Regular expressions, `LIKE`, array expressions, offsets, grouped or general
 aggregation, and execution of joins inside MongoDB are not currently advertised.
 
+## Folded constant predicates
+
+A predicate Exasol's own optimizer reduces to a constant arrives as a single
+boolean literal rather than as the SQL that was written. `WHERE 1 = 0`,
+`WHERE FALSE`, `WHERE 2 > 3` and `WHERE 'a' = 'b'` are therefore all one filter
+node, and so is a conjunction containing one. This is the shape behind the
+`WHERE 1 = 0` metadata probe that JDBC and ODBC clients, ORMs and BI tools send
+to read a table's columns without reading its rows.
+
+A constant-false filter is answered with no MongoDB round trip at all: no
+connection is resolved and no query is issued. A single-group `COUNT(*)` over one
+still returns its zero. A constant-true filter restricts nothing and is dropped,
+which keeps `LIMIT` and `ORDER BY` delegation available. Always-true predicates
+usually never reach the adapter, because Exasol eliminates them before pushdown.
+
+Constants nested in `AND`, `OR`, and `NOT` are folded on arrival, which is exact
+under SQL three-valued logic: `FALSE AND x` is `FALSE`, `TRUE AND x` is `x`, and
+the `OR` cases mirror them.
+
 ## Count aggregation
 
 An eligible single-group `COUNT(*)` becomes a MongoDB `$count` stage after any

@@ -57,6 +57,12 @@ pub struct MongoPushdown {
 }
 
 impl MongoPushdown {
+    /// A constant-false filter is exact and total: no document can match it, so
+    /// a scan carrying one owes MongoDB no round trip at all.
+    pub fn never_matches(&self) -> bool {
+        matches!(self.filter, Some(FilterExpr::Constant { value: false }))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.prefilter.is_none()
             && self.filter.is_none()
@@ -96,6 +102,11 @@ pub enum FilterExpr {
     IsNull {
         column: String,
         negated: bool,
+    },
+    /// A folded boolean literal, which Exasol pushes for a predicate its own
+    /// optimizer reduced to a constant (`WHERE 1 = 0`).
+    Constant {
+        value: bool,
     },
 }
 
@@ -209,7 +220,7 @@ pub fn plan(request: &Json, columns: &[ColumnSpec]) -> Result<QueryPlan, UdfErro
     };
     validate_columns(&selected, &known)?;
 
-    let filter = pushdown.get("filter").map(parse_filter).transpose()?;
+    let filter = constant_true_dropped(pushdown.get("filter").map(parse_filter).transpose()?);
     let order_by = parse_order_by(pushdown)?;
     validate_columns(
         &order_by
@@ -313,7 +324,7 @@ fn plan_single_group(
         ));
     }
 
-    let filter = pushdown.get("filter").map(parse_filter).transpose()?;
+    let filter = constant_true_dropped(pushdown.get("filter").map(parse_filter).transpose()?);
     if let Some(filter) = &filter {
         validate_columns(&referenced_columns(filter), known)?;
     }
@@ -682,6 +693,7 @@ fn path_prefilter_expression(
             Some(doc! {path: {"$type": type_selector(types)}})
         }
         FilterExpr::IsNull { .. } => None,
+        FilterExpr::Constant { .. } => None,
     }
 }
 
@@ -772,6 +784,12 @@ fn non_finite_double_values() -> Bson {
     ])
 }
 
+/// A constant-true filter restricts nothing. Dropping it keeps the plan free of
+/// a `WHERE TRUE` and leaves LIMIT and ORDER BY pushdown available.
+fn constant_true_dropped(filter: Option<FilterExpr>) -> Option<FilterExpr> {
+    filter.filter(|expression| *expression != FilterExpr::Constant { value: true })
+}
+
 fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
     match node.get("type").and_then(Json::as_str) {
         Some("predicate_and" | "predicate_or") => {
@@ -787,19 +805,37 @@ fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
             if expressions.is_empty() {
                 return Err(UdfError::User(format!("{name} predicate is empty")));
             }
-            if is_or {
-                Ok(FilterExpr::Or { expressions })
-            } else {
-                Ok(FilterExpr::And { expressions })
+            // Folding a constant conjunct or disjunct is exact under SQL's
+            // three-valued logic: `FALSE AND x` is FALSE, `TRUE AND x` is x, and
+            // the OR cases mirror them. It also means a surviving constant can
+            // only ever sit at the root of the filter.
+            let (dominant, neutral) = if is_or { (true, false) } else { (false, true) };
+            if expressions.contains(&FilterExpr::Constant { value: dominant }) {
+                return Ok(FilterExpr::Constant { value: dominant });
+            }
+            let mut expressions = expressions
+                .into_iter()
+                .filter(|expression| *expression != FilterExpr::Constant { value: neutral })
+                .collect::<Vec<_>>();
+            match expressions.len() {
+                0 => Ok(FilterExpr::Constant { value: neutral }),
+                1 => Ok(expressions.pop().expect("one expression")),
+                _ if is_or => Ok(FilterExpr::Or { expressions }),
+                _ => Ok(FilterExpr::And { expressions }),
             }
         }
-        Some("predicate_not") => Ok(FilterExpr::Not {
-            expression: Box::new(
-                node.get("expression")
-                    .ok_or_else(|| UdfError::User("NOT predicate has no expression".into()))
-                    .and_then(parse_filter)?,
-            ),
-        }),
+        Some("predicate_not") => {
+            let expression = node
+                .get("expression")
+                .ok_or_else(|| UdfError::User("NOT predicate has no expression".into()))
+                .and_then(parse_filter)?;
+            Ok(match expression {
+                FilterExpr::Constant { value } => FilterExpr::Constant { value: !value },
+                expression => FilterExpr::Not {
+                    expression: Box::new(expression),
+                },
+            })
+        }
         Some(
             "predicate_equal"
             | "predicate_notequal"
@@ -837,9 +873,18 @@ fn parse_filter(node: &Json) -> Result<FilterExpr, UdfError> {
                 })?,
             negated: node.get("type").and_then(Json::as_str) == Some("predicate_is_not_null"),
         }),
-        _ => Err(UdfError::User(
-            "filter contains an operation that was not advertised".into(),
-        )),
+        // `LITERAL_BOOL` with `FILTER_EXPRESSIONS` invites a filter that is just
+        // a boolean literal, which is what Exasol sends once its optimizer has
+        // folded a constant predicate such as `WHERE 1 = 0`.
+        Some("literal_bool") => Ok(FilterExpr::Constant {
+            value: node.get("value").and_then(Json::as_bool).ok_or_else(|| {
+                UdfError::User("boolean literal filter has no boolean value".into())
+            })?,
+        }),
+        other => Err(UdfError::User(format!(
+            "filter contains an unsupported node type '{}'",
+            other.unwrap_or("(missing)")
+        ))),
     }
 }
 
@@ -1003,6 +1048,7 @@ fn mongo_filter_exact(expr: &FilterExpr, known: &HashMap<&str, &ColumnSpec>) -> 
                     | ColumnSource::ValueEmptyStringMask
             )
         }),
+        FilterExpr::Constant { .. } => true,
     }
 }
 
@@ -1063,6 +1109,8 @@ fn mongo_prefilter_candidate(
             negated: true,
         } => scalar_type_names(known.get(column.as_str())?).map(|_| expr.clone()),
         FilterExpr::IsNull { .. } => None,
+        // A constant needs no root-document seek; the exact filter carries it.
+        FilterExpr::Constant { .. } => None,
     }
 }
 
@@ -1166,6 +1214,7 @@ fn mongo_expression(expr: &FilterExpr, known: &HashMap<&str, &ColumnSpec>) -> Op
                 Bson::Document(doc! {"$not": [present]})
             })
         }
+        FilterExpr::Constant { value } => Some(Bson::Boolean(*value)),
     }
 }
 
@@ -1222,6 +1271,7 @@ fn mongo_expression_negated(expr: &FilterExpr, known: &HashMap<&str, &ColumnSpec
             },
             known,
         ),
+        FilterExpr::Constant { value } => Some(Bson::Boolean(!*value)),
     }
 }
 
@@ -1395,6 +1445,13 @@ fn render_filter(
             quote_ident(column),
             if *negated { "NOT " } else { "" }
         ),
+        FilterExpr::Constant { value } => {
+            if *value {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
     })
 }
 
@@ -1434,6 +1491,7 @@ fn referenced_columns(expr: &FilterExpr) -> Vec<String> {
         FilterExpr::Compare { column, .. }
         | FilterExpr::In { column, .. }
         | FilterExpr::IsNull { column, .. } => result.push(column.clone()),
+        FilterExpr::Constant { .. } => {}
     }
     deduplicate(&mut result);
     result
@@ -1972,6 +2030,218 @@ mod tests {
                 "{capability} did not reach MongoDB as an exact $match: {pipeline:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_advertised_literal_is_planned_in_filter_position() {
+        let advertised = CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|capability| capability.starts_with("LITERAL_"))
+            .collect::<HashSet<_>>();
+        let cases = vec![
+            // A boolean literal is the whole filter: it is what Exasol sends
+            // once its optimizer has folded a constant predicate.
+            (
+                "LITERAL_BOOL",
+                serde_json::json!({"type":"literal_bool","value":false}),
+            ),
+            (
+                "LITERAL_DOUBLE",
+                serde_json::json!({
+                    "type":"predicate_less",
+                    "left":{"type":"column","name":"score"},
+                    "right":{"type":"literal_double","value":"1.5"}
+                }),
+            ),
+            (
+                "LITERAL_EXACTNUMERIC",
+                serde_json::json!({
+                    "type":"predicate_less",
+                    "left":{"type":"column","name":"age"},
+                    "right":{"type":"literal_exactnumeric","value":40}
+                }),
+            ),
+            (
+                "LITERAL_STRING",
+                serde_json::json!({
+                    "type":"predicate_equal",
+                    "left":{"type":"column","name":"name"},
+                    "right":{"type":"literal_string","value":"ada"}
+                }),
+            ),
+            (
+                "LITERAL_TIMESTAMP",
+                serde_json::json!({
+                    "type":"predicate_less",
+                    "left":{"type":"column","name":"created"},
+                    "right":{"type":"literal_timestamp","value":"2026-08-09 10:11:12.123"}
+                }),
+            ),
+        ];
+        let covered = cases
+            .iter()
+            .map(|(capability, _)| *capability)
+            .collect::<HashSet<_>>();
+        assert_eq!(covered, advertised, "literal capability matrix drifted");
+
+        for (capability, filter) in cases {
+            let request = serde_json::json!({"pushdownRequest": {
+                "type":"select",
+                "selectList":[{"type":"column","name":"name"}],
+                "filter":filter
+            }});
+            plan(&request, &extended_columns()).unwrap_or_else(|error| {
+                panic!("{capability} was advertised but not planned: {error}")
+            });
+        }
+    }
+
+    #[test]
+    fn a_folded_constant_false_filter_returns_no_rows_without_touching_mongodb() {
+        let filter = |filter: Json| {
+            serde_json::json!({"pushdownRequest": {
+                "type":"select",
+                "selectList":[{"type":"column","name":"name"}],
+                "filter":filter,
+                "limit":{"numElements":5}
+            }})
+        };
+        let compare = serde_json::json!({
+            "type":"predicate_equal",
+            "left":{"type":"column","name":"name"},
+            "right":{"type":"literal_string","value":"ada"}
+        });
+        let boolean = |value| serde_json::json!({"type":"literal_bool","value":value});
+
+        // `WHERE 1 = 0`, `WHERE FALSE`, `WHERE 2 > 3`: all reach the adapter as
+        // one folded boolean literal.
+        let query = plan(&filter(boolean(false)), &extended_columns()).unwrap();
+        assert_eq!(query.filter, Some(FilterExpr::Constant { value: false }));
+        assert_eq!(
+            query.mongo.filter,
+            Some(FilterExpr::Constant { value: false })
+        );
+        assert!(query.mongo.never_matches());
+        let sql = render_outer_sql("SELECT scan", &query, &extended_columns()).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"name\" FROM (SELECT scan) \"MONGO_PUSHDOWN\" WHERE FALSE LIMIT 5"
+        );
+        // Should the scan ever run the pipeline, MongoDB matches nothing too.
+        let pipeline = MongoReadPlan::RootFind
+            .pipeline_with(&query.mongo, &extended_columns())
+            .unwrap();
+        assert!(
+            pipeline.contains(&doc! {"$match": {"$expr": false}}),
+            "{pipeline:?}"
+        );
+
+        // A constant-true filter restricts nothing and is dropped.
+        let query = plan(&filter(boolean(true)), &extended_columns()).unwrap();
+        assert_eq!(query.filter, None);
+        assert!(!query.mongo.never_matches());
+        let sql = render_outer_sql("SELECT scan", &query, &extended_columns()).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"name\" FROM (SELECT scan) \"MONGO_PUSHDOWN\" LIMIT 5"
+        );
+
+        // Folding is exact under three-valued logic, and leaves a constant only
+        // ever at the root. A constant-true root is then dropped entirely.
+        let compound = |kind: &str, expressions: Vec<Json>| serde_json::json!({"type":kind, "expressions":expressions});
+        let not =
+            |expression: Json| serde_json::json!({"type":"predicate_not","expression":expression});
+        let equality = Some(FilterExpr::Compare {
+            op: CompareOp::Equal,
+            column: "name".into(),
+            literal: Literal::String("ada".into()),
+        });
+        let never = Some(FilterExpr::Constant { value: false });
+        let cases = vec![
+            (
+                compound("predicate_and", vec![boolean(false), compare.clone()]),
+                never.clone(),
+            ),
+            (
+                compound("predicate_or", vec![boolean(false), compare.clone()]),
+                equality.clone(),
+            ),
+            (
+                compound("predicate_and", vec![boolean(true), compare.clone()]),
+                equality.clone(),
+            ),
+            (
+                compound("predicate_or", vec![boolean(true), compare.clone()]),
+                None,
+            ),
+            (
+                compound("predicate_and", vec![boolean(true), boolean(true)]),
+                None,
+            ),
+            (
+                compound("predicate_or", vec![boolean(false), boolean(false)]),
+                never.clone(),
+            ),
+            (not(boolean(true)), never.clone()),
+            (
+                not(compound(
+                    "predicate_and",
+                    vec![boolean(false), compare.clone()],
+                )),
+                None,
+            ),
+        ];
+        for (node, expected) in cases {
+            let query = plan(&filter(node.clone()), &extended_columns()).unwrap();
+            assert_eq!(query.filter, expected, "{node}");
+        }
+    }
+
+    #[test]
+    fn a_constant_false_filter_counts_zero_remotely() {
+        let mut request = count_request(vec![]);
+        request["pushdownRequest"]["filter"] =
+            serde_json::json!({"type":"literal_bool","value":false});
+        let query = plan(&request, &extended_columns()).unwrap();
+        assert_eq!(query.mongo.aggregation, Some(MongoAggregation::CountStar));
+        assert!(query.mongo.never_matches());
+        // The remote count owns the value, so the outer SQL adds no predicate.
+        let sql = render_outer_sql("SELECT scan", &query, &extended_columns()).unwrap();
+        assert!(!sql.contains("WHERE"), "{sql}");
+    }
+
+    #[test]
+    fn an_unsupported_filter_node_is_named_in_the_error() {
+        let request = |filter: Json| {
+            serde_json::json!({"pushdownRequest": {
+                "type":"select",
+                "selectList":[{"type":"column","name":"name"}],
+                "filter":filter
+            }})
+        };
+        let error = plan(
+            &request(serde_json::json!({"type":"predicate_like"})),
+            &extended_columns(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unsupported node type 'predicate_like'"),
+            "{error}"
+        );
+        let error = plan(&request(serde_json::json!({})), &extended_columns())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("'(missing)'"), "{error}");
+        // A boolean literal filter with no usable value is rejected, not folded.
+        let error = plan(
+            &request(serde_json::json!({"type":"literal_bool","value":"false"})),
+            &extended_columns(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("boolean literal filter"), "{error}");
     }
 
     #[test]
