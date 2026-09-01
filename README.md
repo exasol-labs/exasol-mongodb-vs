@@ -133,7 +133,7 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
 
 ### Prerequisites
 
-- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.22.1 and Rust 1.94.1;
+- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.23.0 and Rust 1.94.1;
 - a MongoDB deployment reachable from the Exasol runtime;
 - permission to install a UDF library and create scripts, connections, and a
   virtual schema; and
@@ -145,17 +145,18 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
 make build-so verify-so
 ```
 
-This creates `target/release/libmongodb_vs.so` in the pinned Debian/glibc build
-environment used for the supported artifact. Do not deploy a host-built library.
+This creates `target/release/libmongodb_vs.so` in `rust:1.94.1-trixie`, the same
+Debian release the SLC stages its runtime from, so the artifact links against
+the glibc it will load against. Do not deploy a host-built library.
 
 The required Rust SLC fingerprint is:
 
 ```text
-0.22.1:rustc_1.94.1__e408947bf_2026-03-25_
+0.23.0:rustc_1.94.1__e408947bf_2026-03-25_
 ```
 
 Exasol compares this fingerprint exactly. The repository therefore pins both
-`exasol-udf-sdk` and `exasol-udf-macros` to 0.22.1 and Rust to 1.94.1. Register
+`exasol-udf-sdk` and `exasol-udf-macros` to 0.23.0 and Rust to 1.94.1. Register
 a matching SLC and configure the `RUST` language alias to use it before
 installing the scripts; an SLC built for another SDK or compiler version cannot
 load this artifact. `make verify-so` derives the SDK portion from `Cargo.lock`

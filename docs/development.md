@@ -3,8 +3,8 @@
 ## Toolchain
 
 The repository pins Rust 1.94.1 in `rust-toolchain.toml` and the fingerprinted
-Exasol UDF SDK and macro crates to 0.22.1. Install the
-additional quality tools with:
+Exasol UDF SDK and macro crates to 0.23.0. Install the additional quality tools
+with:
 
 ```bash
 cargo install cargo-llvm-cov --version 0.8.4 --locked
@@ -83,8 +83,8 @@ make build-so
 make verify-so
 ```
 
-The build runs in the pinned Debian/glibc container compatible with the Rust
-Script Language Container and creates:
+The build runs in `rust:1.94.1-trixie`, matching the Debian release the Rust
+Script Language Container stages its own runtime tree from, and creates:
 
 ```text
 target/release/libmongodb_vs.so

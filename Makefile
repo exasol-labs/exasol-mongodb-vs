@@ -70,10 +70,14 @@ fuzz-release:
 		(cd fuzz && cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target corpus/$$target -- -max_total_time=$(FUZZ_MAX_TOTAL_TIME) -max_len=$(FUZZ_MAX_LEN) -timeout=$(FUZZ_TIMEOUT) -rss_limit_mb=$(FUZZ_RSS_LIMIT_MB) -dict=dictionaries/$$target.dict) || exit $$?; \
 	done
 
-# Build in the same Debian/glibc environment as the working Rust SLC. A host
-# release artifact is not a supported Exasol deployment artifact.
+# Build in the same Debian release the Rust SLC stages its runtime from. SLC
+# 0.23.0 builds its client on rust:1.94-trixie and donates that tree's glibc
+# (floor 2.41), so trixie is the exact target environment: the artifact links
+# against the same glibc it will load against, and `cargo exasol-udf validate`
+# accepts glibc references up to that floor. A host release artifact is not a
+# supported Exasol deployment artifact.
 build-so:
-	docker run --rm -v "$(CURDIR):/build" -w /build rust:1.94.1-bookworm \
+	docker run --rm -v "$(CURDIR):/build" -w /build rust:1.94.1-trixie \
 		bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config cmake && cargo build --locked --release -p mongodb-vs'
 
 verify-so:

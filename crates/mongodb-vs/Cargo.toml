@@ -13,8 +13,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
 
 [dependencies]
 chrono = "0.4"
-exasol-udf-sdk = "=0.22.1"
-exasol-udf-macros = "=0.22.1"
+exasol-udf-sdk = "=0.23.0"
+exasol-udf-macros = "=0.23.0"
 futures-util = "0.3"
 mongodb = { version = "3.8.0", default-features = false, features = ["compat-3-3-0", "bson-2", "rustls-tls", "dns-resolver"] }
 serde = { version = "1", features = ["derive"] }

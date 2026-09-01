@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Moved the fingerprinted pins to Rust Script Language Container 0.23.0:
+  `exasol-udf-sdk` and `exasol-udf-macros` are now pinned to `=0.23.0`, so the
+  required fingerprint is `0.23.0:rustc_1.94.1__e408947bf_2026-03-25_`. The
+  Rust toolchain pin is unchanged.
+- Moved the supported artifact build from `rust:1.94.1-bookworm` to
+  `rust:1.94.1-trixie`, matching the Debian release SLC 0.23.0 stages its
+  runtime tree from (glibc floor 2.41), so the artifact links against the same
+  glibc it loads against instead of an older one.
+
 ## [0.1.0]
 
 ### Added
