@@ -9,6 +9,11 @@ FUZZ_TIMEOUT ?= 10
 FUZZ_RSS_LIMIT_MB ?= 2048
 FUZZ_TARGETS := manifest_parse scan_spec_parse pushdown_plan
 
+# The pinned build container installs packages, so it must run as root. These
+# hand `target/` back to the invoking user afterwards.
+HOST_UID ?= $(shell id -u)
+HOST_GID ?= $(shell id -g)
+
 .PHONY: test property-tests check quality fmt-check lint-rust lint-shell dependencies coverage \
 	build-so verify-so test-integration test-e2e fuzz-replay fuzz-release \
 	verify-release-version package-release
@@ -78,7 +83,7 @@ fuzz-release:
 # supported Exasol deployment artifact.
 build-so:
 	docker run --rm -v "$(CURDIR):/build" -w /build rust:1.94.1-trixie \
-		bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config cmake && cargo build --locked --release -p mongodb-vs'
+		bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config cmake && cargo build --locked --release -p mongodb-vs && chown -R $(HOST_UID):$(HOST_GID) target'
 
 verify-so:
 	./scripts/verify_artifact.sh target/release/libmongodb_vs.so
