@@ -26,10 +26,7 @@ pub fn run_scan(ctx: &mut dyn UdfContext) -> Result<(), UdfError> {
     // single-group COUNT still owes Exasol its one zero row.
     if spec.pushdown.never_matches() {
         if spec.pushdown.aggregation == Some(MongoAggregation::CountStar) {
-            ctx.emit(&[Value::Numeric(Decimal {
-                unscaled: 0,
-                scale: 0,
-            })])?;
+            ctx.emit(vec![Value::Int64(0)])?;
         }
         return Ok(());
     }
@@ -97,10 +94,7 @@ async fn run_cursor(
                         "MongoDB returned multiple rows for a single-group aggregate".into(),
                     ));
                 }
-                ctx.emit(&[Value::Numeric(Decimal {
-                    unscaled: i128::from(count),
-                    scale: 0,
-                })])?;
+                ctx.emit(vec![Value::Int64(count)])?;
                 return Ok(());
             }
             while let Some(document) = cursor
@@ -165,7 +159,7 @@ fn emit_row(
         .iter()
         .map(|column| column_value(column, &spec.plan, root_id, current, ordinals))
         .collect::<Result<Vec<_>, _>>()?;
-    ctx.emit(&row)
+    ctx.emit(row)
 }
 
 fn validate_advertised_branches(current: &Bson, columns: &[ColumnSpec]) -> Result<(), UdfError> {
@@ -461,10 +455,16 @@ fn integer_value(value: i128, sql_type: &SqlType, column: &str) -> Result<Value,
             "column '{column}' integer requires {digits} digits but is DECIMAL({precision},0)"
         )));
     }
-    Ok(Value::Numeric(Decimal {
-        unscaled: value,
-        scale: 0,
-    }))
+    // Exasol carries DECIMAL(1..18,0) as INT32/INT64 blocks, which accept only
+    // integer values; NUMERIC accepts them too, so Numeric is reserved for the
+    // DECIMAL(19..36,0) values i64 cannot hold.
+    Ok(i64::try_from(value).map_or(
+        Value::Numeric(Decimal {
+            unscaled: value,
+            scale: 0,
+        }),
+        Value::Int64,
+    ))
 }
 
 fn string_value(value: String, sql_type: &SqlType, column: &str) -> Result<Value, UdfError> {
@@ -599,6 +599,8 @@ mod property_tests;
 mod tests {
     use std::str::FromStr;
 
+    use exasol_udf_sdk::test_support::TestContext;
+
     use super::*;
     use mongodb::bson::{
         Binary, DateTime, Decimal128, Timestamp, oid::ObjectId, spec::BinarySubtype,
@@ -610,35 +612,6 @@ mod tests {
             exasol_name: name.into(),
             sql_type,
             bson_kind: Some(kind),
-        }
-    }
-
-    /// Records emitted rows and fails any attempt to reach MongoDB.
-    struct OfflineContext {
-        input: Value,
-        emitted: Vec<Vec<Value>>,
-    }
-
-    impl UdfContext for OfflineContext {
-        fn num_columns(&self) -> usize {
-            1
-        }
-        fn get(&self, col: usize) -> Result<&Value, UdfError> {
-            assert_eq!(col, 0);
-            Ok(&self.input)
-        }
-        fn emit(&mut self, values: &[Value]) -> Result<(), UdfError> {
-            self.emitted.push(values.to_vec());
-            Ok(())
-        }
-        fn next(&mut self) -> Result<bool, UdfError> {
-            unreachable!()
-        }
-        fn connection(
-            &self,
-            _name: &str,
-        ) -> Result<exasol_udf_sdk::connect_back::ConnectionObject, UdfError> {
-            panic!("a constant-false scan must not resolve a connection")
         }
     }
 
@@ -661,12 +634,10 @@ mod tests {
             pushdown,
             inference_fingerprint: String::new(),
         };
-        let mut ctx = OfflineContext {
-            input: Value::String(spec.to_json().unwrap()),
-            emitted: Vec::new(),
-        };
+        // No connection is registered, so reaching MongoDB fails the scan.
+        let mut ctx = TestContext::scalar(vec![Value::String(spec.to_json().unwrap())]);
         run_scan(&mut ctx).unwrap();
-        ctx.emitted
+        ctx.emitted().to_vec()
     }
 
     #[test]
@@ -686,10 +657,7 @@ mod tests {
                 aggregation: Some(MongoAggregation::CountStar),
                 ..never
             }),
-            vec![vec![Value::Numeric(Decimal {
-                unscaled: 0,
-                scale: 0
-            })]]
+            vec![vec![Value::Int64(0)]]
         );
     }
 
@@ -747,10 +715,7 @@ mod tests {
         );
         assert_eq!(
             scalar_value(Some(&Bson::Int64(i64::MIN)), &integer).unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: i64::MIN as i128,
-                scale: 0
-            })
+            Value::Int64(i64::MIN)
         );
         let date = scalar(
             "d",
@@ -828,10 +793,7 @@ mod tests {
         );
         assert_eq!(
             scalar_value(Some(&timestamp), &time).unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 42,
-                scale: 0
-            })
+            Value::Int64(42)
         );
     }
 
@@ -991,10 +953,7 @@ mod tests {
         validate_advertised_branches(&integer, &columns).unwrap();
         assert_eq!(
             scalar_value(Some(&integer), &columns[0]).unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 7,
-                scale: 0,
-            })
+            Value::Int64(7)
         );
         assert_eq!(
             scalar_value(Some(&integer), &columns[1]).unwrap(),
@@ -1041,10 +1000,7 @@ mod tests {
                 &[]
             )
             .unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 2,
-                scale: 0
-            })
+            Value::Int64(2)
         );
         assert_eq!(
             column_value(
@@ -1111,10 +1067,7 @@ mod tests {
         );
         assert_eq!(
             column_value(&columns[4], &plan, &root_id, &object, &[]).unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 7,
-                scale: 0,
-            })
+            Value::Int64(7)
         );
 
         let string = Bson::String("tail".into());
@@ -1132,10 +1085,7 @@ mod tests {
         validate_advertised_branches(&array, &columns).unwrap();
         assert_eq!(
             column_value(&columns[2], &plan, &root_id, &array, &[]).unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 2,
-                scale: 0,
-            })
+            Value::Int64(2)
         );
 
         validate_advertised_branches(&Bson::Null, &columns).unwrap();
@@ -1274,7 +1224,7 @@ mod tests {
                 &[3]
             )
             .unwrap(),
-            Value::Numeric(_)
+            Value::Int64(_)
         ));
         assert_eq!(
             column_value(
@@ -1285,10 +1235,7 @@ mod tests {
                 &[3]
             )
             .unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 3,
-                scale: 0
-            })
+            Value::Int64(3)
         );
         assert!(
             column_value(
@@ -1332,10 +1279,7 @@ mod tests {
                 &[3]
             )
             .unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 2,
-                scale: 0
-            })
+            Value::Int64(2)
         );
         let bad_object = value(
             ColumnSource::ObjectLink {
@@ -1402,10 +1346,7 @@ mod tests {
                 &increment
             )
             .unwrap(),
-            Value::Numeric(Decimal {
-                unscaled: 7,
-                scale: 0
-            })
+            Value::Int64(7)
         );
         assert_eq!(scalar_value(None, &increment).unwrap(), Value::Null);
         assert_eq!(

@@ -23,7 +23,7 @@ ORACLE_SCHEMA="MONGO_M3_ORACLE_${RUN_TOKEN_UPPER}"
 CONNECTION_NAME="MONGODB_M1_${RUN_TOKEN_UPPER}"
 INFERRED_ROOT="$(printf '%s' "$MONGO_COLLECTION" | tr '[:lower:]' '[:upper:]')"
 
-for command in docker exasol jq scp; do
+for command in docker exasol jq; do
   command -v "$command" >/dev/null || {
     echo "error: required command not found: $command" >&2
     exit 1
@@ -86,11 +86,25 @@ fi
 SO="$PROJECT_DIR/target/release/libmongodb_vs.so"
 "$PROJECT_DIR/scripts/verify_artifact.sh" "$SO"
 
-SSH_PORT="$(jq -r '.connection.sshPort' "$DEPLOYMENT_DIR/deployment.json")"
+# Older local deployments publish SSH access to the VM; current ones instead
+# share a host directory that bucketfs.conf maps onto each bucket.
+SSH_PORT="$(jq -r '.connection.sshPort // empty' "$DEPLOYMENT_DIR/deployment.json")"
 SSH_KEY="$DEPLOYMENT_DIR/local/node_access.pem"
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  -o LogLevel=ERROR -P "$SSH_PORT" "$SO" \
-  root@127.0.0.1:/var/lib/exa/bucketfs/bfsdefault/rust/libmongodb_vs.so
+VM_SHARED="$DEPLOYMENT_DIR/local/runtime/vm-shared"
+if [[ -n "$SSH_PORT" && -r "$SSH_KEY" ]]; then
+  scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -P "$SSH_PORT" "$SO" \
+    root@127.0.0.1:/var/lib/exa/bucketfs/bfsdefault/rust/libmongodb_vs.so
+else
+  BUCKET_DIR="$(awk '$2 == "bfsdefault" && $3 == "rust" { print $1; exit }' \
+    "$VM_SHARED/exa/bucketfs.conf" 2>/dev/null || true)"
+  [[ -n "$BUCKET_DIR" ]] || {
+    echo "error: deployment has neither SSH access nor a bfsdefault/rust mapping in $VM_SHARED/exa/bucketfs.conf" >&2
+    exit 1
+  }
+  mkdir -p "$VM_SHARED$BUCKET_DIR"
+  cp "$SO" "$VM_SHARED$BUCKET_DIR/libmongodb_vs.so"
+fi
 
 exasol connect --deployment-dir "$DEPLOYMENT_DIR" --json=compact \
   -f "$PROJECT_DIR/sql/install.sql" >/dev/null

@@ -440,55 +440,25 @@ fn quote_sql_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use exasol_udf_sdk::connect_back::ConnectionObject;
-    use exasol_udf_sdk::value::Value;
+    use exasol_udf_sdk::test_support::TestContext;
 
     use super::*;
 
-    struct Context {
-        script_schema: String,
-        connections: HashMap<String, ConnectionObject>,
+    fn context_without_connection() -> TestContext {
+        TestContext::scalar(Vec::new()).with_script_schema("MONGO_VS")
     }
 
-    impl UdfContext for Context {
-        fn num_columns(&self) -> usize {
-            0
-        }
-        fn get(&self, _col: usize) -> Result<&Value, UdfError> {
-            unreachable!()
-        }
-        fn emit(&mut self, _values: &[Value]) -> Result<(), UdfError> {
-            unreachable!()
-        }
-        fn next(&mut self) -> Result<bool, UdfError> {
-            unreachable!()
-        }
-        fn script_schema(&self) -> String {
-            self.script_schema.clone()
-        }
-        fn connection(&self, name: &str) -> Result<ConnectionObject, UdfError> {
-            self.connections
-                .get(name)
-                .cloned()
-                .ok_or_else(|| UdfError::User("missing".into()))
-        }
-    }
-
-    fn context() -> Context {
-        Context {
-            script_schema: "MONGO_VS".into(),
-            connections: HashMap::from([(
-                "MONGO_CONN".into(),
-                ConnectionObject {
-                    kind: "".into(),
-                    address: "mongodb://mongo:27017".into(),
-                    user: "secret-user".into(),
-                    password: "secret-password".into(),
-                },
-            )]),
-        }
+    fn context() -> TestContext {
+        context_without_connection().with_connection(
+            "MONGO_CONN",
+            ConnectionObject {
+                kind: "".into(),
+                address: "mongodb://mongo:27017".into(),
+                user: "secret-user".into(),
+                password: "secret-password".into(),
+            },
+        )
     }
 
     fn manifest() -> Json {
@@ -560,8 +530,7 @@ mod tests {
 
     #[test]
     fn create_does_not_resolve_connection_for_explicit_metadata() {
-        let mut ctx = context();
-        ctx.connections.clear();
+        let mut ctx = context_without_connection();
         assert!(dispatch(&mut ctx, &create_request()).is_ok());
     }
 

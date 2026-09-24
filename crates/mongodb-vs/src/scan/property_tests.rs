@@ -35,9 +35,15 @@ proptest! {
         );
 
         prop_assert_eq!(result.is_ok(), digits <= precision);
-        if let Ok(Value::Numeric(converted)) = result {
-            prop_assert_eq!(converted.unscaled, value);
-            prop_assert_eq!(converted.scale, 0);
+        match result {
+            Ok(Value::Int64(converted)) => prop_assert_eq!(i128::from(converted), value),
+            Ok(Value::Numeric(converted)) => {
+                prop_assert!(i64::try_from(value).is_err());
+                prop_assert_eq!(converted.unscaled, value);
+                prop_assert_eq!(converted.scale, 0);
+            }
+            Ok(other) => prop_assert!(false, "unexpected integer value {other:?}"),
+            Err(_) => {}
         }
     }
 

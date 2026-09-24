@@ -76,7 +76,7 @@ fuzz-release:
 	done
 
 # Build in the same Debian release the Rust SLC stages its runtime from. SLC
-# 0.23.0 builds its client on rust:1.94-trixie and donates that tree's glibc
+# 0.30.0 builds its client on rust:1.94-trixie and donates that tree's glibc
 # (floor 2.41), so trixie is the exact target environment: the artifact links
 # against the same glibc it will load against, and `cargo exasol-udf validate`
 # accepts glibc references up to that floor. A host release artifact is not a

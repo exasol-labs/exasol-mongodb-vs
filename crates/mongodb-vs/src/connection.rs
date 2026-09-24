@@ -41,30 +41,12 @@ pub async fn client(conn: &ConnectionObject) -> Result<Client, UdfError> {
 
 #[cfg(test)]
 mod tests {
-    use exasol_udf_sdk::value::Value;
+    use exasol_udf_sdk::test_support::TestContext;
 
     use super::*;
 
-    struct Context(Option<ConnectionObject>);
-
-    impl UdfContext for Context {
-        fn num_columns(&self) -> usize {
-            0
-        }
-        fn get(&self, _col: usize) -> Result<&Value, UdfError> {
-            unreachable!()
-        }
-        fn emit(&mut self, _values: &[Value]) -> Result<(), UdfError> {
-            unreachable!()
-        }
-        fn next(&mut self) -> Result<bool, UdfError> {
-            unreachable!()
-        }
-        fn connection(&self, _name: &str) -> Result<ConnectionObject, UdfError> {
-            self.0
-                .clone()
-                .ok_or_else(|| UdfError::User("not found".into()))
-        }
+    fn context() -> TestContext {
+        TestContext::scalar(Vec::new())
     }
 
     fn connection(address: &str, user: &str, password: &str) -> ConnectionObject {
@@ -79,16 +61,16 @@ mod tests {
     #[test]
     fn resolves_named_connection_and_reports_safe_errors() {
         let expected = connection("mongodb://localhost:27017", "", "");
-        let resolved = resolve(&Context(Some(expected)), "MONGO").unwrap();
+        let resolved = resolve(&context().with_connection("MONGO", expected), "MONGO").unwrap();
         assert_eq!(resolved.address, "mongodb://localhost:27017");
         assert!(
-            resolve(&Context(None), "MONGO")
+            resolve(&context(), "MONGO")
                 .unwrap_err()
                 .to_string()
                 .contains("MONGO")
         );
         assert!(
-            resolve(&Context(None), "  ")
+            resolve(&context(), "  ")
                 .unwrap_err()
                 .to_string()
                 .contains("must not be empty")

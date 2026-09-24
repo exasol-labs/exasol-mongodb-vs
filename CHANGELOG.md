@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Moved the fingerprinted pins to Rust Script Language Container 0.30.0, the
+  release `exasol slc install rust` resolves for Exasol Personal 2.3.0:
+  `exasol-udf-sdk` and `exasol-udf-macros` are now pinned to `=0.30.0`, so the
+  required fingerprint is `0.30.0:rustc_1.94.1__e408947bf_2026-03-25_`. The
+  Rust toolchain pin and the `rust:1.94.1-trixie` build image are unchanged.
+  An artifact built for SLC 0.23.0 cannot load in the new container.
+- Unit tests use the SDK's `test-support` `TestContext` instead of hand-written
+  `UdfContext` doubles.
+- `make test-e2e` uploads the library through the shared BucketFS directory of
+  current local Exasol Personal deployments, which no longer publish SSH
+  access, and still uses SSH where a deployment does.
+
+### Fixed
+
+- Integer columns are emitted as `Int64` rather than `Numeric`. SLC 0.26.0 and
+  later validate every emitted cell against its declared column, and Exasol
+  carries `DECIMAL(1..18,0)` as INT32/INT64 blocks that reject `Numeric`, so
+  every scan returning an integer, position, array length, or `COUNT(*)`
+  column failed with `output column … is DECIMAL(18,0) but the value is
+  Numeric(…)`. `Numeric` is now reserved for `DECIMAL(19..36,0)` values outside
+  the `i64` range.
+
 ## [0.1.0]
 
 ### Added
