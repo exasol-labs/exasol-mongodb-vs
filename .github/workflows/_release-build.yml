@@ -107,6 +107,8 @@ jobs:
   assemble:
     name: Assemble release package
     needs: package
+    # The skipped optional fuzz job would otherwise skip this job too.
+    if: ${{ always() && needs.package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
