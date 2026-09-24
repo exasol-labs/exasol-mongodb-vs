@@ -86,7 +86,7 @@ build-so:
 		bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config cmake && cargo build --locked --release -p mongodb-vs && chown -R $(HOST_UID):$(HOST_GID) target'
 
 verify-so:
-	./scripts/verify_artifact.sh target/release/libmongodb_vs.so
+	./scripts/verify_artifact.sh target/release/libmongodb_vs.so $(VERIFY_PLATFORM)
 
 verify-release-version:
 	@test -n "$(VERSION)" || { echo "error: VERSION is required" >&2; exit 1; }
