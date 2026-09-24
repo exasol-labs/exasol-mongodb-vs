@@ -32,6 +32,13 @@ All notable changes to this project are documented here. The format follows
   Numeric(…)`. `Numeric` is now reserved for `DECIMAL(19..36,0)` values outside
   the `i64` range.
 
+### Security
+
+- Updated `rustls` from 0.23.43 to 0.23.45 for
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285), which
+  accepted TLS 1.3 handshake messages across encryption-level boundaries on
+  MongoDB TLS connections.
+
 ## [0.1.0]
 
 ### Added
