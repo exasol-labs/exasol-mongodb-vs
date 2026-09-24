@@ -139,7 +139,13 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
   virtual schema; and
 - Docker when building the Linux artifact from source.
 
-### 1. Build the connector
+### 1. Get the connector
+
+Each [release](https://github.com/exasol-labs/exasol-mongodb-vs/releases)
+ships `linux-x86_64` and `linux-aarch64` builds. Pick the one matching your
+Exasol deployment's architecture; Exasol Personal on Apple silicon needs
+`linux-aarch64`. To build from source instead, for the Docker host's
+architecture:
 
 ```bash
 make build-so verify-so

@@ -90,8 +90,11 @@ Script Language Container stages its own runtime tree from, and creates:
 target/release/libmongodb_vs.so
 ```
 
-The verifier checks that the result is a 64-bit Linux ELF exporting exactly
-`MONGODB_ADAPTER` and `MONGODB_SCAN`. It derives the SDK version from
+The build targets the Docker host's architecture: `linux-x86_64` on x86_64
+hosts and `linux-aarch64` on Arm64 hosts such as Apple silicon. The verifier
+checks that the result is a 64-bit x86_64 or aarch64 Linux ELF exporting exactly
+`MONGODB_ADAPTER` and `MONGODB_SCAN`; `make verify-so
+VERIFY_PLATFORM=linux-aarch64` additionally requires that architecture. It derives the SDK version from
 `Cargo.lock` and combines it with the SLC toolchain fingerprint recorded in
 `rust-udf-fingerprint.txt`, so an SDK upgrade cannot leave a stale expected
 version in the artifact check. A host-built release library is not a supported

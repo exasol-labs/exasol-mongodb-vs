@@ -9,7 +9,8 @@ manually.
 Protect `main` and require these checks before merge:
 
 - `Lint, test, and coverage`
-- `Linux UDF artifact`
+- `Linux UDF artifact (linux-x86_64)`
+- `Linux UDF artifact (linux-aarch64)`
 - `MongoDB inference integration`
 
 Enable the merge queue if the repository uses queued merges; CI supports the
@@ -28,13 +29,28 @@ attestation, and OIDC permissions.
    opt-in and remains outside normal CI; enable it for major-release campaigns
    when the execution environment has sufficient resources.
 5. Download the retained candidate artifact and run `make test-e2e` against a
-   matching Exasol deployment. Record the successful workflow and live-test
-   run in the release review.
+   matching Exasol deployment, using the library for that deployment's
+   architecture: `linux-aarch64` for Exasol Personal on Apple silicon,
+   `linux-x86_64` otherwise. Copy it to `target/release/libmongodb_vs.so` and
+   set `MONGODB_E2E_SKIP_BUILD=1` so the suite tests the candidate rather than a
+   local build. Record the successful workflow and live-test run in the release
+   review.
 
 The candidate workflow validates version metadata, runs the quality and
-MongoDB integration gates, builds the supported Linux UDF in the pinned
-container, verifies its entry points and SLC fingerprint, and uploads a bundle,
-standalone shared library, and `SHA256SUMS`. It does not create a tag or release.
+MongoDB integration gates, and builds the supported Linux UDF in the pinned
+container for each release platform:
+
+| Platform | Runner | Exasol deployments |
+|---|---|---|
+| `linux-x86_64` | `ubuntu-24.04` | x86_64 servers and cloud instances |
+| `linux-aarch64` | `ubuntu-24.04-arm` | Exasol Personal on Apple silicon, Graviton and other Arm64 hosts |
+
+Each platform builds natively rather than under emulation. The packaging step
+verifies the entry points, the SLC fingerprint, and that the ELF architecture
+matches the platform name, so a bundle cannot be mislabeled. The workflow
+uploads one artifact with a bundle and standalone shared library per platform
+and a single `SHA256SUMS` covering all of them. It does not create a tag or
+release.
 
 ## Create the draft release
 

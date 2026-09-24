@@ -3,6 +3,8 @@
 set -euo pipefail
 
 artifact="${1:-target/release/libmongodb_vs.so}"
+# Optional release platform the artifact must be built for, such as linux-x86_64.
+platform="${2:-}"
 
 for command in file nm; do
   command -v "$command" >/dev/null || {
@@ -16,8 +18,22 @@ done
   exit 1
 }
 
-file "$artifact" | grep -q 'ELF 64-bit' || {
+description="$(file -b "$artifact")"
+[[ "$description" == "ELF 64-bit"* ]] || {
   echo "error: artifact is not a 64-bit Linux ELF shared object" >&2
+  exit 1
+}
+
+case "$description" in
+  *x86-64*) detected_platform="linux-x86_64" ;;
+  *aarch64*) detected_platform="linux-aarch64" ;;
+  *)
+    echo "error: artifact targets an unsupported architecture: $description" >&2
+    exit 1
+    ;;
+esac
+[[ -z "$platform" || "$platform" == "$detected_platform" ]] || {
+  echo "error: artifact is built for $detected_platform, not $platform" >&2
   exit 1
 }
 
@@ -64,4 +80,4 @@ grep -aFq "$expected_fingerprint" "$artifact" || {
   exit 1
 }
 
-echo "Artifact verified: Linux ELF, expected entry points, SLC fingerprint $expected_fingerprint."
+echo "Artifact verified: $detected_platform ELF, expected entry points, SLC fingerprint $expected_fingerprint."

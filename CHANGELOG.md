@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Releases ship a `linux-aarch64` build next to `linux-x86_64`, for Exasol
+  Personal on Apple silicon and other Arm64 deployments. Each platform builds
+  natively in the pinned container, packaging rejects an artifact whose ELF
+  architecture does not match its platform name, and one `SHA256SUMS` and its
+  provenance attestation cover every platform. CI builds and verifies both.
+
 ## [0.1.1]
 
 ### Changed

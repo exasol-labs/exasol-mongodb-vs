@@ -15,10 +15,10 @@ on:
     outputs:
       artifact_name:
         description: Name of the uploaded release artifact
-        value: ${{ jobs.package.outputs.artifact_name }}
+        value: ${{ jobs.assemble.outputs.artifact_name }}
       version:
         description: Normalized release version
-        value: ${{ jobs.package.outputs.version }}
+        value: ${{ jobs.assemble.outputs.version }}
 
 permissions:
   contents: read
@@ -69,11 +69,46 @@ jobs:
         run: make fuzz-replay fuzz-release
 
   package:
-    name: Build verified release package
+    name: Build verified release package (${{ matrix.platform }})
     needs: [quality, mongodb-integration, fuzz]
     if: ${{ always() && needs.quality.result == 'success' && needs.mongodb-integration.result == 'success' && (needs.fuzz.result == 'success' || needs.fuzz.result == 'skipped') }}
-    runs-on: ubuntu-24.04
+    # Each platform builds natively, so the pinned build container runs without
+    # emulation and the artifact check sees the architecture it will ship.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build supported Linux UDF
+        run: make build-so
+      - name: Verify and package release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          SOURCE_DATE_EPOCH: "0"
+        run: make package-release VERSION="${REQUESTED_VERSION#v}" RELEASE_OUTPUT_DIR=target/release-package RELEASE_PLATFORM="$RELEASE_PLATFORM"
+      - name: Upload platform package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-platform-${{ matrix.platform }}
+          path: |
+            target/release-package/*.tar.gz
+            target/release-package/*.so
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    name: Assemble release package
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
       version: ${{ steps.metadata.outputs.version }}
@@ -87,13 +122,26 @@ jobs:
           version="${REQUESTED_VERSION#v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "artifact_name=exasol-mongodb-vs-$version-release" >> "$GITHUB_OUTPUT"
-      - name: Build supported Linux UDF
-        run: make build-so
-      - name: Verify and package release
+      - name: Download platform packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-platform-*
+          path: target/release-package
+          merge-multiple: true
+      - name: Write combined checksums
         env:
           RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
-          SOURCE_DATE_EPOCH: "0"
-        run: make package-release VERSION="$RELEASE_VERSION" RELEASE_OUTPUT_DIR=target/release-package RELEASE_PLATFORM=linux-x86_64
+        run: |
+          ./scripts/write_release_checksums.sh "$RELEASE_VERSION" target/release-package
+          cat target/release-package/SHA256SUMS
+          for platform in linux-x86_64 linux-aarch64; do
+            for extension in tar.gz so; do
+              grep -q " exasol-mongodb-vs-$RELEASE_VERSION-$platform.$extension\$" target/release-package/SHA256SUMS || {
+                echo "error: release package is missing $platform.$extension" >&2
+                exit 1
+              }
+            done
+          done
       - name: Upload release package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
