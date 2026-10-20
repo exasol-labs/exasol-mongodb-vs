@@ -4,7 +4,7 @@
 
 **Query MongoDB from Exasol with document-friendly SQL—dot paths, array iteration, and JSON reconstruction—without copying collections first.**
 
-![Rust 1.94.1](https://img.shields.io/badge/Rust-1.94.1-000000?logo=rust)
+![Rust 1.98.1](https://img.shields.io/badge/Rust-1.98.1-000000?logo=rust)
 ![MongoDB 8 tested](https://img.shields.io/badge/MongoDB-8%20tested-47A248?logo=mongodb&logoColor=white)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Coverage enforced](https://img.shields.io/badge/coverage-%E2%89%A585%25-brightgreen)
@@ -133,7 +133,7 @@ polymorphic values, null masks, empty strings, and the explicit manifest format.
 
 ### Prerequisites
 
-- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.30.0 and Rust 1.94.1;
+- an Exasol deployment with Virtual Schema support and a [Rust Script Language Container](https://github.com/exasol-labs/language-container-rs) matching SDK 0.32.0 and Rust 1.98.1;
 - a MongoDB deployment reachable from the Exasol runtime;
 - permission to install a UDF library and create scripts, connections, and a
   virtual schema; and
@@ -151,18 +151,18 @@ architecture:
 make build-so verify-so
 ```
 
-This creates `target/release/libmongodb_vs.so` in `rust:1.94.1-trixie`, the same
+This creates `target/release/libmongodb_vs.so` in `rust:1.98.1-trixie`, the same
 Debian release the SLC stages its runtime from, so the artifact links against
 the glibc it will load against. Do not deploy a host-built library.
 
 The required Rust SLC fingerprint is:
 
 ```text
-0.30.0:rustc_1.94.1__e408947bf_2026-03-25_
+0.32.0:rustc_1.98.1__48a229cea_2026-09-01_
 ```
 
 Exasol compares this fingerprint exactly. The repository therefore pins both
-`exasol-udf-sdk` and `exasol-udf-macros` to 0.30.0 and Rust to 1.94.1. Register
+`exasol-udf-sdk` and `exasol-udf-macros` to 0.32.0 and Rust to 1.98.1. Register
 a matching SLC and configure the `RUST` language alias to use it before
 installing the scripts; an SLC built for another SDK or compiler version cannot
 load this artifact. `make verify-so` derives the SDK portion from `Cargo.lock`

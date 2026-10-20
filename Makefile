@@ -76,13 +76,13 @@ fuzz-release:
 	done
 
 # Build in the same Debian release the Rust SLC stages its runtime from. SLC
-# 0.30.0 builds its client on rust:1.94-trixie and donates that tree's glibc
+# 0.32.0 builds its client on rust:1.98.1-trixie and donates that tree's glibc
 # (floor 2.41), so trixie is the exact target environment: the artifact links
 # against the same glibc it will load against, and `cargo exasol-udf validate`
 # accepts glibc references up to that floor. A host release artifact is not a
 # supported Exasol deployment artifact.
 build-so:
-	docker run --rm -v "$(CURDIR):/build" -w /build rust:1.94.1-trixie \
+	docker run --rm -v "$(CURDIR):/build" -w /build rust:1.98.1-trixie \
 		bash -c 'apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config cmake && cargo build --locked --release -p mongodb-vs && chown -R $(HOST_UID):$(HOST_GID) target'
 
 verify-so:

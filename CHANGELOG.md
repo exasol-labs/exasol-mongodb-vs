@@ -14,6 +14,17 @@ All notable changes to this project are documented here. The format follows
   architecture does not match its platform name, and one `SHA256SUMS` and its
   provenance attestation cover every platform. CI builds and verifies both.
 
+### Changed
+
+- Moved the fingerprinted pins to Rust Script Language Container 0.32.0:
+  `exasol-udf-sdk` and `exasol-udf-macros` are now pinned to `=0.32.0`, and
+  the Rust toolchain pin and build image move to 1.98.1 and
+  `rust:1.98.1-trixie`, matching the toolchain SLC 0.32.0 builds with. The
+  required fingerprint is `0.32.0:rustc_1.98.1__48a229cea_2026-09-01_`. An
+  artifact built for SLC 0.30.0 cannot load in the new container.
+- Updated the remaining dependencies to their latest releases, including
+  `mongodb` 3.9.1 and `sha2` 0.11.
+
 ## [0.1.1]
 
 ### Changed
