@@ -2,8 +2,8 @@
 
 ## Toolchain
 
-The repository pins Rust 1.94.1 in `rust-toolchain.toml` and the fingerprinted
-Exasol UDF SDK and macro crates to 0.30.0. Install the additional quality tools
+The repository pins Rust 1.98.1 in `rust-toolchain.toml` and the fingerprinted
+Exasol UDF SDK and macro crates to 0.32.0. Install the additional quality tools
 with:
 
 ```bash
@@ -83,7 +83,7 @@ make build-so
 make verify-so
 ```
 
-The build runs in `rust:1.94.1-trixie`, matching the Debian release the Rust
+The build runs in `rust:1.98.1-trixie`, matching the Debian release the Rust
 Script Language Container stages its own runtime tree from, and creates:
 
 ```text
