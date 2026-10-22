@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### Added
 
 - Releases ship a `linux-aarch64` build next to `linux-x86_64`, for Exasol
@@ -13,6 +15,10 @@ All notable changes to this project are documented here. The format follows
   natively in the pinned container, packaging rejects an artifact whose ELF
   architecture does not match its platform name, and one `SHA256SUMS` and its
   provenance attestation cover every platform. CI builds and verifies both.
+- CI runs the live end-to-end suite on every pull request: it deploys Exasol
+  Personal 2.3.0 in Podman, registers the Rust SLC release matching the
+  `exasol-udf-sdk` pin, and runs `make test-e2e` against the verified
+  `linux-x86_64` artifact.
 
 ### Changed
 
@@ -23,7 +29,15 @@ All notable changes to this project are documented here. The format follows
   required fingerprint is `0.32.0:rustc_1.98.1__48a229cea_2026-09-01_`. An
   artifact built for SLC 0.30.0 cannot load in the new container.
 - Updated the remaining dependencies to their latest releases, including
-  `mongodb` 3.9.1 and `sha2` 0.11.
+  `mongodb` 3.9.1, `sha2` 0.11, and `tokio` 1.54.1. The `mongodb` driver
+  3.9 no longer supports MongoDB 4.2.
+- `make test-e2e` supports Linux as well as macOS and current Exasol Personal
+  2.3.0 deployments, which publish neither SSH nor BucketFS HTTP. It stages
+  the library through the host-shared `local/runtime/exa/bucketfs` directory
+  and restarts the deployment once when the `bfsdefault/rust` bucket is new.
+- The MongoDB test containers set `GLIBC_TUNABLES=glibc.pthread.rseq=1` so
+  MongoDB 8 starts on Linux 6.19 to 7.0.13 kernels (SERVER-121912), and the
+  test scripts print MongoDB's logs when they fail.
 
 ## [0.1.1]
 
