@@ -15,6 +15,12 @@ for command in docker cargo; do
 done
 
 cleanup() {
+  local status=$?
+  # The container is removed below, so surface why MongoDB stopped first.
+  if [[ "$status" -ne 0 ]]; then
+    echo "MongoDB container logs (last 40 lines):" >&2
+    docker logs --tail 40 "$container" >&2 2>&1 || true
+  fi
   docker rm -f "$container" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
