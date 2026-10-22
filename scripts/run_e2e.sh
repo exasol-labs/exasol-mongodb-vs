@@ -86,11 +86,15 @@ fi
 SO="$PROJECT_DIR/target/release/libmongodb_vs.so"
 "$PROJECT_DIR/scripts/verify_artifact.sh" "$SO"
 
-# Older local deployments publish SSH access to the VM; current ones instead
-# share a host directory that bucketfs.conf maps onto each bucket.
+# Older local deployments publish SSH access to the VM; newer ones instead
+# share a host directory that bucketfs.conf maps onto each bucket. Exasol
+# Personal 2.3.0 and later expose the database's /exa directory at
+# local/runtime/exa, where creating bucketfs/<service>/<bucket> creates the
+# matching bucket.
 SSH_PORT="$(jq -r '.connection.sshPort // empty' "$DEPLOYMENT_DIR/deployment.json")"
 SSH_KEY="$DEPLOYMENT_DIR/local/node_access.pem"
 VM_SHARED="$DEPLOYMENT_DIR/local/runtime/vm-shared"
+EXA_DATA="$DEPLOYMENT_DIR/local/runtime/exa"
 if [[ -n "$SSH_PORT" && -r "$SSH_KEY" ]]; then
   scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o LogLevel=ERROR -P "$SSH_PORT" "$SO" \
@@ -98,12 +102,16 @@ if [[ -n "$SSH_PORT" && -r "$SSH_KEY" ]]; then
 else
   BUCKET_DIR="$(awk '$2 == "bfsdefault" && $3 == "rust" { print $1; exit }' \
     "$VM_SHARED/exa/bucketfs.conf" 2>/dev/null || true)"
-  [[ -n "$BUCKET_DIR" ]] || {
-    echo "error: deployment has neither SSH access nor a bfsdefault/rust mapping in $VM_SHARED/exa/bucketfs.conf" >&2
+  if [[ -n "$BUCKET_DIR" ]]; then
+    BUCKET_DIR="$VM_SHARED$BUCKET_DIR"
+  elif [[ -d "$EXA_DATA/bucketfs" ]]; then
+    BUCKET_DIR="$EXA_DATA/bucketfs/bfsdefault/rust"
+  else
+    echo "error: deployment has no SSH access, no bfsdefault/rust mapping in $VM_SHARED/exa/bucketfs.conf, and no $EXA_DATA/bucketfs directory" >&2
     exit 1
-  }
-  mkdir -p "$VM_SHARED$BUCKET_DIR"
-  cp "$SO" "$VM_SHARED$BUCKET_DIR/libmongodb_vs.so"
+  fi
+  mkdir -p "$BUCKET_DIR"
+  cp "$SO" "$BUCKET_DIR/libmongodb_vs.so"
 fi
 
 exasol connect --deployment-dir "$DEPLOYMENT_DIR" --json=compact \
