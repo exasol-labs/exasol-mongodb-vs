@@ -73,3 +73,59 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - run: make test-integration
+
+  # Live acceptance against Exasol Personal. On Linux the database runs
+  # directly in Podman on the runner; MongoDB runs in Docker and is reached
+  # through the Docker bridge gateway.
+  exasol-e2e:
+    name: Exasol Personal end-to-end
+    needs: linux-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EXASOL_PERSONAL_VERSION: 2.3.0
+      EXASOL_PERSONAL_SHA256: 78000e784689a0c4234f085c8e5e3ee21fb36e62b02d087f325cb86119867266
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download verified Linux UDF
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: mongodb-vs-linux-x86_64-udf-${{ github.sha }}
+          path: target/release
+      - name: Install pinned Exasol Personal launcher
+        run: |
+          archive=exasol-personal_Linux_x86_64.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/exasol/exasol-personal/releases/download/v${EXASOL_PERSONAL_VERSION}/$archive"
+          echo "$EXASOL_PERSONAL_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$HOME/.local/bin" exasol
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Deploy Exasol Personal
+        run: |
+          podman --version
+          exasol install local --auto-approve
+          exasol info
+      - name: Register the Rust SLC matching the SDK pin
+        # `exasol slc install rust` always takes the newest release; the
+        # artifact only loads in the SLC whose fingerprint it was built for.
+        # The bucket staging in run_e2e.sh restarts the deployment, which
+        # activates this SLC as well.
+        run: |
+          sdk_version="$(awk '$0 == "name = \"exasol-udf-sdk\"" { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"
+          exasol slc custom install --no-restart --alias RUST --language rust \
+            --source "https://github.com/exasol-labs/language-container-rs/releases/download/v${sdk_version}/lc-rust-${sdk_version}.tar.gz"
+      - name: Run end-to-end suite
+        env:
+          MONGODB_E2E_SKIP_BUILD: "1"
+        run: |
+          EXASOL_DEPLOYMENT_DIR="$(exasol info --json | jq -r '.deploymentDir')"
+          MONGODB_E2E_GATEWAY="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          export EXASOL_DEPLOYMENT_DIR MONGODB_E2E_GATEWAY
+          make test-e2e
+      - name: Show Exasol deployment state
+        if: failure()
+        run: |
+          exasol status || true
+          exasol slc list || true
+          podman ps -a || true
