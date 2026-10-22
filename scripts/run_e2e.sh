@@ -53,7 +53,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker run -d --name "$MONGO_CONTAINER" -p 27017 "$MONGO_IMAGE" >/dev/null
+# MongoDB 8 refuses to start on Linux 6.19 up to 7.0.13 because its TCMalloc
+# breaks on those kernels' rseq ABI (SERVER-121912). Turning glibc's rseq
+# registration on routes TCMalloc around it, at a small caching cost.
+docker run -d --name "$MONGO_CONTAINER" -p 27017 \
+  -e GLIBC_TUNABLES=glibc.pthread.rseq=1 \
+  "$MONGO_IMAGE" >/dev/null
 MONGO_PORT="$(docker port "$MONGO_CONTAINER" 27017/tcp | head -n1 | awk -F: '{print $NF}')"
 
 for _ in $(seq 1 30); do
