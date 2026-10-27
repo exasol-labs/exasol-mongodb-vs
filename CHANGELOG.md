@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3]
+
 ### Changed
 
 - Moved the fingerprinted pins to Rust Script Language Container 0.33.0:
