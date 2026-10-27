@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Moved the fingerprinted pins to Rust Script Language Container 0.33.0:
+  `exasol-udf-sdk` and `exasol-udf-macros` are now pinned to `=0.33.0`. The
+  Rust toolchain stays at 1.98.1, so the required fingerprint is
+  `0.33.0:rustc_1.98.1__48a229cea_2026-09-01_`. An artifact built for SLC
+  0.32.0 cannot load in the new container.
+- Updated the remaining locked dependencies to their latest compatible
+  releases.
+
 ## [0.1.2]
 
 ### Added

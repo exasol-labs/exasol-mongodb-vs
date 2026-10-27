@@ -3,7 +3,7 @@
 ## Toolchain
 
 The repository pins Rust 1.98.1 in `rust-toolchain.toml` and the fingerprinted
-Exasol UDF SDK and macro crates to 0.32.0. Install the additional quality tools
+Exasol UDF SDK and macro crates to 0.33.0. Install the additional quality tools
 with:
 
 ```bash
